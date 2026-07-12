@@ -1,0 +1,18 @@
+.container {
+  width: 100%;
+  margin: 0 auto;
+}
+
+.wide {
+  width: min(1200px, calc(100% - 48px));
+}
+
+.hero {
+  width: min(760px, 100%);
+}
+
+@media (max-width: 720px) {
+  .wide {
+    width: min(100%, calc(100% - 24px));
+  }
+}

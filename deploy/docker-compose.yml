@@ -1,0 +1,79 @@
+name: ai-media-factory
+
+x-app: &app
+  image: ai-media-factory/app:private-beta
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  env_file:
+    - /etc/ai-media-factory/runtime.env
+  environment:
+    AMF_STORAGE_DIR: /var/lib/ai-media-factory
+    AMF_DATABASE_PATH: /var/lib/ai-media-factory/db/ai-media-factory.sqlite
+    AMF_MAX_UPLOAD_BYTES: "1073741824"
+    WHISPER_CPP_BIN: /usr/local/bin/whisper-cli
+    WHISPER_MODEL_PATH: /var/lib/ai-media-factory-models/whisper/ggml-small.bin
+    WHISPER_CPP_NO_GPU: "1"
+    PYANNOTE_PYTHON: /app/scripts/pyannote-docker
+    PYANNOTE_MODEL_PATH: /var/lib/ai-media-factory-models/pyannote/speaker-diarization-community-1
+    ARGOS_TRANSLATE_COMMAND: /app/scripts/argos-translate-docker
+    ARGOS_PACKAGE_DIR: /var/lib/ai-media-factory-models/argos/packages
+  volumes:
+    - /var/lib/ai-media-factory:/var/lib/ai-media-factory
+    - /var/lib/ai-media-factory-models:/var/lib/ai-media-factory-models:ro
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  web:
+    <<: *app
+    command: ["npm", "start"]
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  worker:
+    <<: *app
+    command: ["npm", "run", "worker"]
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:-994}"
+    network_mode: none
+    volumes:
+      - /var/lib/ai-media-factory:/var/lib/ai-media-factory
+      - /var/lib/ai-media-factory-models:/var/lib/ai-media-factory-models:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 10g
+    cpus: 3.5
+    pids_limit: 768
+    healthcheck:
+      test: ["CMD", "npm", "exec", "tsx", "scripts/worker-healthcheck.ts"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
+  pyannote-image:
+    image: ai-media-factory/pyannote-community-1:4.0.3
+    build:
+      context: ../lib/providers/adapters/pyannote-community-1
+    profiles: ["build-only"]
+    command: ["--help"]
+
+  argos-image:
+    image: ai-media-factory/argos-translate:1.9.6
+    build:
+      context: ../lib/providers/adapters/argos-translate
+    profiles: ["build-only"]

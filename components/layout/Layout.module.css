@@ -1,0 +1,50 @@
+.pageShell {
+  min-height: 100vh;
+  background: var(--color-bg-hero);
+  position: relative;
+  overflow: hidden;
+}
+
+.pageShell::before,
+.pageShell::after {
+  content: "";
+  position: absolute;
+  inset: auto;
+  pointer-events: none;
+  border-radius: 999px;
+  filter: blur(80px);
+  opacity: 0.26;
+}
+
+.pageShell::before {
+  width: 24rem;
+  height: 24rem;
+  top: -13rem;
+  left: calc(50% - 12rem);
+  background: rgba(91, 124, 255, 0.07);
+}
+
+.pageShell::after {
+  width: 18rem;
+  height: 18rem;
+  bottom: -10rem;
+  right: -8rem;
+  background: rgba(91, 124, 255, 0.05);
+}
+
+.topbar {
+  padding: 24px 0 0;
+}
+
+.topbar > * {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-24);
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    padding-top: 16px;
+  }
+}

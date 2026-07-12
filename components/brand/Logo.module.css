@@ -1,0 +1,35 @@
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mark {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(17, 17, 17, 0.06);
+  box-shadow: var(--shadow-elevation-1);
+  backdrop-filter: blur(10px);
+}
+
+.mark svg {
+  width: 16px;
+  height: 16px;
+}
+
+.text {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+@media (max-width: 720px) {
+  .text {
+    font-size: 13px;
+  }
+}

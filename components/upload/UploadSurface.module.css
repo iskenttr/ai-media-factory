@@ -1,0 +1,263 @@
+.surface {
+  position: relative;
+  width: min(640px, 100%);
+  min-height: 340px;
+  padding: var(--space-40);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-24);
+  background: var(--surface-ai);
+  border: 1px solid var(--color-border-soft);
+  box-shadow: var(--shadow-elevation-2);
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform var(--transition-medium), box-shadow var(--transition-medium),
+    border-color var(--transition-medium), background var(--transition-slow);
+}
+
+.surface::before,
+.surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  transition: opacity var(--transition-medium), transform var(--transition-medium);
+}
+
+.surface::before {
+  inset: -10px;
+  background: radial-gradient(circle, rgba(91, 124, 255, 0.08), transparent 68%);
+  filter: blur(28px);
+  opacity: 0.22;
+  z-index: -2;
+}
+
+.surface::after {
+  inset: 1px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0));
+  opacity: 0.55;
+  z-index: -1;
+}
+
+.surface:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(17, 17, 17, 0.08),
+    0 0 0 1px rgba(17, 17, 17, 0.06);
+  border-color: var(--color-border-strong);
+}
+
+.surface:hover::before {
+  opacity: 0.32;
+  transform: scale(1.01);
+}
+
+.surface:focus-visible {
+  outline: 2px solid rgba(91, 124, 255, 0.48);
+  outline-offset: 4px;
+}
+
+.surface[data-state="drag"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(246, 247, 255, 0.95));
+  border-color: rgba(91, 124, 255, 0.26);
+  transform: translateY(-3px);
+  box-shadow: 0 14px 34px rgba(91, 124, 255, 0.09),
+    0 0 0 1px rgba(91, 124, 255, 0.1);
+}
+
+.surface[data-state="loading"] {
+  min-height: 260px;
+  cursor: default;
+}
+
+.orb {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--space-24);
+  transition: transform var(--motion), opacity var(--motion);
+}
+
+.orbRing,
+.orbCore {
+  border-radius: 999px;
+}
+
+.orbRing {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(17, 17, 17, 0.06);
+  background: radial-gradient(circle, rgba(91, 124, 255, 0.08), rgba(255, 255, 255, 0.08));
+  animation: pulseRing 5.8s ease-in-out infinite;
+}
+
+.orbCore {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  display: grid;
+  place-items: center;
+  color: var(--color-brand-ink);
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(17, 17, 17, 0.06);
+  box-shadow: 0 10px 22px rgba(17, 17, 17, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transition: transform var(--transition-medium), background var(--transition-medium);
+}
+
+.orbCore svg {
+  width: 24px;
+  height: 24px;
+}
+
+.surface:hover .orbCore,
+.surface[data-state="drag"] .orbCore {
+  transform: scale(1.03);
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.copy,
+.progress {
+  transition: opacity var(--transition-fast), transform var(--transition-medium);
+}
+
+.copy {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.copyDrag,
+.progress {
+  position: absolute;
+  inset: 0;
+  padding: var(--space-40);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.surface[data-state="drag"] .copyIdle {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.surface[data-state="drag"] .copyDrag {
+  opacity: 1;
+}
+
+.surface[data-state="loading"] .orb,
+.surface[data-state="loading"] .copy {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.surface[data-state="loading"] .progress {
+  opacity: 1;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(1.45rem, 3vw, 1.9rem);
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 15px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.progressMeta {
+  width: min(420px, 100%);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-16);
+  margin-bottom: var(--space-16);
+}
+
+.progressFilename,
+.progressPercentage {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.progressFilename {
+  max-width: 72%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progressTrack {
+  width: min(420px, 100%);
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.08);
+  box-shadow: inset 0 1px 1px rgba(17, 17, 17, 0.04);
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #111111 0%, #5b7cff 100%);
+  transition: width 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.progressStatus {
+  margin: var(--space-16) 0 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  letter-spacing: -0.01em;
+}
+
+@keyframes pulseRing {
+  0%,
+  100% {
+    transform: scale(0.98);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .surface {
+    min-height: 300px;
+    padding: var(--space-32) var(--space-24);
+  }
+
+  .orb {
+    width: 108px;
+    height: 108px;
+  }
+
+  .orbCore {
+    width: 60px;
+    height: 60px;
+  }
+
+  .title {
+    font-size: 28px;
+  }
+
+  .copyDrag,
+  .progress {
+    padding: var(--space-32) var(--space-24);
+  }
+}

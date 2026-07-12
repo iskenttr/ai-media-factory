@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: pyannote-docker RUNNER_PATH MODEL_PATH AUDIO_PATH" >&2
+  exit 64
+fi
+
+model_path=$2
+audio_path=$3
+
+exec docker run --rm --network none --memory 6g --cpus 3 --pids-limit 512 \
+  --mount "type=bind,source=$model_path,target=/models/community-1,readonly" \
+  --mount "type=bind,source=$audio_path,target=/data/audio.wav,readonly" \
+  ai-media-factory/pyannote-community-1:4.0.3 \
+  /models/community-1 /data/audio.wav

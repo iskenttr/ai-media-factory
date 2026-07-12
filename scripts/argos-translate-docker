@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+: "${ARGOS_PACKAGE_DIR:?ARGOS_PACKAGE_DIR is required}"
+exec docker run --rm -i --network none --memory 2g --cpus 2 --pids-limit 256 \
+  --mount "type=bind,source=$ARGOS_PACKAGE_DIR,target=/root/.local/share/argos-translate/packages,readonly" \
+  ai-media-factory/argos-translate:1.9.6

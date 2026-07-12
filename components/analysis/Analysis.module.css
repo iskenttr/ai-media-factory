@@ -1,0 +1,213 @@
+.screen {
+  min-height: calc(100vh - 78px);
+  display: grid;
+  place-items: center;
+  padding: 48px 24px 64px;
+}
+
+.content {
+  width: min(600px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-32);
+  text-align: center;
+}
+
+.signature {
+  width: 58px;
+  height: 20px;
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-tertiary);
+  transition: color var(--motion-gentle);
+}
+
+.signature[data-resolved="true"] {
+  color: var(--color-brand-ink);
+}
+
+.signature span {
+  height: 1px;
+  background: currentColor;
+}
+
+.signature i {
+  width: 1px;
+  height: 18px;
+  background: currentColor;
+}
+
+.headingGroup {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-16);
+}
+
+.heading {
+  margin: 0;
+  max-width: 13ch;
+  font-size: 48px;
+  line-height: 52px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+}
+
+.summary {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--color-text-secondary);
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.card {
+  width: 100%;
+  min-height: 156px;
+  padding: var(--space-32);
+  border-radius: var(--radius-24);
+  background: var(--surface-primary);
+  border: 1px solid var(--color-border-soft);
+  box-shadow: var(--shadow-elevation-2);
+  text-align: left;
+}
+
+.timeline {
+  list-style: none;
+  display: grid;
+  gap: var(--space-20);
+  margin: 0;
+  padding: 0;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: start;
+  gap: var(--space-12);
+  color: var(--color-text-primary);
+  font-size: 15px;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+  animation: revealStep var(--motion);
+}
+
+.step[data-state="unavailable"] {
+  color: var(--color-text-secondary);
+}
+
+.stepMark {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-surface-secondary);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.step[data-state="unavailable"] .stepMark {
+  color: var(--color-text-tertiary);
+}
+
+.badge {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--color-surface-secondary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+}
+
+.completion,
+.actions,
+.failure {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-16);
+}
+
+.completion p,
+.actions p,
+.failure p,
+.connection {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.continueButton,
+.actions button,
+.failure button {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-12);
+  background: var(--color-brand-ink);
+  color: white;
+  cursor: pointer;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.continueButton:hover:not(:disabled),
+.actions button:hover:not(:disabled),
+.failure button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.continueButton:disabled,
+.actions button:disabled,
+.failure button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.failure button + button {
+  min-height: 36px;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+@keyframes revealStep {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 720px) {
+  .screen {
+    min-height: calc(100vh - 64px);
+    padding: 40px 16px 48px;
+  }
+
+  .content {
+    gap: var(--space-24);
+  }
+
+  .heading {
+    font-size: 36px;
+    line-height: 40px;
+    letter-spacing: -0.03em;
+  }
+
+  .card {
+    padding: var(--space-24);
+  }
+}
