@@ -5,14 +5,23 @@ import path from "node:path";
 import ffmpegStatic from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
+import {
+  createQualityProfile,
+  prepareCues,
+  speechIntervalsFromSilenceLog,
+  validateCues,
+  type FittedCue,
+} from "@/lib/subtitle-quality/engine";
+import { choosePlacement } from "@/lib/subtitle-quality/visual";
+
 const ffmpegPath = process.env.FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 const ffprobePath = process.env.FFPROBE_PATH ?? ffprobeStatic.path ?? "ffprobe";
-const minimumCueDurationMs = 900;
 
 export interface RenderSubtitle {
   startMs: number;
   endMs: number;
   text: string;
+  speakerId?: string;
 }
 
 export interface SubtitleLayout {
@@ -33,25 +42,54 @@ function runProcess(command: string, args: string[]) {
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4000); });
+    child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-100_000); });
     child.on("error", reject);
     child.on("close", (code) => code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`${path.basename(command)}_failed:${code}:${stderr.slice(-800)}`)));
   });
 }
 
-async function detectSubtitleLayout(sourcePath: string): Promise<SubtitleLayout> {
-  const { stdout } = await runProcess(ffprobePath, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", sourcePath]);
-  const stream = (JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }> }).streams?.[0];
+function runBinaryProcess(command: string, args: string[]) {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`${path.basename(command)}_failed:${code}:${stderr.slice(-800)}`)));
+  });
+}
+
+async function sampleVisualFrames(sourcePath: string) {
+  const width = 180;
+  const height = 320;
+  const bytes = await runBinaryProcess(ffmpegPath, [
+    "-hide_banner", "-loglevel", "error", "-i", sourcePath,
+    "-vf", `fps=1/4,scale=${width}:${height},format=gray`, "-frames:v", "24",
+    "-f", "rawvideo", "-pix_fmt", "gray", "-",
+  ]);
+  const size = width * height;
+  const frames: Uint8Array[] = [];
+  for (let offset = 0; offset + size <= bytes.length; offset += size) frames.push(bytes.subarray(offset, offset + size));
+  return { width, height, frames };
+}
+
+async function detectSubtitleLayout(sourcePath: string): Promise<SubtitleLayout & { durationMs: number }> {
+  const { stdout } = await runProcess(ffprobePath, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json", sourcePath]);
+  const parsed = JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number }>; format?: { duration?: string } };
+  const stream = parsed.streams?.[0];
   if (!stream?.width || !stream.height) throw new Error("video_dimensions_unavailable");
-  const vertical = stream.height > stream.width;
+  const profile = createQualityProfile(stream.width, stream.height);
   return {
     width: stream.width,
     height: stream.height,
-    orientation: vertical ? "vertical" : "horizontal",
-    fontSize: Math.max(30, Math.round(stream.height * (vertical ? 0.037 : 0.048))),
-    horizontalMargin: Math.round(stream.width * (vertical ? 0.075 : 0.08)),
-    bottomMargin: Math.round(stream.height * (vertical ? 0.14 : 0.09)),
-    maxCharactersPerLine: vertical ? 24 : 42,
+    orientation: profile.orientation,
+    fontSize: profile.maxFontSize,
+    horizontalMargin: profile.safeLeft,
+    bottomMargin: profile.preferredBottom,
+    maxCharactersPerLine: profile.orientation === "vertical" ? 30 : 48,
+    durationMs: Math.round(Number(parsed.format?.duration ?? 0) * 1_000),
   };
 }
 
@@ -59,37 +97,14 @@ function normalizeText(text: string) {
   return text.normalize("NFC").replace(/\s+/g, " ").trim();
 }
 
-function joinTexts(first: string, second: string) {
-  const left = normalizeText(first);
-  const right = normalizeText(second);
-  return /[.!?…]$/u.test(left) ? `${left} ${right}` : `${left} · ${right}`;
-}
-
 export function rebalanceSubtitleCues(segments: RenderSubtitle[], maxCharactersPerLine: number) {
-  const source = segments
-    .filter((segment) => segment.endMs > segment.startMs && normalizeText(segment.text))
-    .map((segment) => ({ ...segment, text: normalizeText(segment.text) }))
-    .sort((a, b) => a.startMs - b.startMs);
-  const result: RenderSubtitle[] = [];
-
-  for (let index = 0; index < source.length; index += 1) {
-    let current = { ...source[index] };
-    let next = source[index + 1];
-    const overlaps = next && current.endMs > next.startMs;
-    const tooShort = current.endMs - current.startMs < minimumCueDurationMs;
-    const canMerge = next && (overlaps || tooShort) && joinTexts(current.text, next.text).length <= maxCharactersPerLine * 2;
-    if (canMerge) {
-      current = { startMs: current.startMs, endMs: Math.max(current.endMs, next.endMs), text: joinTexts(current.text, next.text) };
-      index += 1;
-      next = source[index + 1];
-    }
-    if (current.endMs - current.startMs < minimumCueDurationMs) {
-      const maximumEnd = next ? next.startMs : current.startMs + minimumCueDurationMs;
-      current.endMs = Math.max(current.endMs, Math.min(current.startMs + minimumCueDurationMs, maximumEnd));
-    }
-    result.push(current);
-  }
-  return result;
+  const profile = createQualityProfile(maxCharactersPerLine <= 30 ? 1080 : 1920, maxCharactersPerLine <= 30 ? 1920 : 1080);
+  return prepareCues(segments, profile).map((cue) => ({
+    startMs: cue.startMs,
+    endMs: cue.endMs,
+    text: cue.text,
+    ...(cue.speakerId ? { speakerId: cue.speakerId } : {}),
+  }));
 }
 
 export function wrapSubtitleText(text: string, maxCharactersPerLine: number) {
@@ -127,6 +142,18 @@ function assText(text: string, maxCharactersPerLine: number) {
     .replaceAll("{", "\\{").replaceAll("}", "\\}").replaceAll("\u0000", "\\N");
 }
 
+function fittedAssText(cue: FittedCue) {
+  return cue.lines.join("\\N").replaceAll("\\N", "\u0000").replaceAll("\\", "\\\\")
+    .replaceAll("{", "\\{").replaceAll("}", "\\}").replaceAll("\u0000", "\\N");
+}
+
+function createFittedAss(cues: FittedCue[], layout: SubtitleLayout) {
+  const dialogue = cues.map((cue) =>
+    `Dialogue: 0,${assTime(cue.startMs)},${assTime(cue.endMs)},Localized,,0,0,0,,{\\fs${cue.fontSize}}${fittedAssText(cue)}`,
+  ).join("\n");
+  return `[Script Info]\nScriptType: v4.00+\nPlayResX: ${layout.width}\nPlayResY: ${layout.height}\nScaledBorderAndShadow: yes\nWrapStyle: 2\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Localized,Arial,${layout.fontSize},&H00FFFFFF,&H000000FF,&H00101010,&H70000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(layout.fontSize * 0.065))},${Math.max(1, Math.round(layout.fontSize * 0.02))},2,${layout.horizontalMargin},${layout.horizontalMargin},${layout.bottomMargin},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${dialogue}\n`;
+}
+
 export function createAssSubtitles(segments: RenderSubtitle[], layout: SubtitleLayout = {
   width: 1920, height: 1080, orientation: "horizontal", fontSize: 52, horizontalMargin: 110, bottomMargin: 96, maxCharactersPerLine: 42,
 }) {
@@ -146,15 +173,58 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
   await mkdir(path.dirname(outputPath), { recursive: true });
   const subtitlePath = path.join(path.dirname(outputPath), "localized.ass");
   const layout = await detectSubtitleLayout(sourcePath);
-  await writeFile(subtitlePath, createAssSubtitles(segments, layout), "utf8");
+  let profile = createQualityProfile(layout.width, layout.height);
+  const silence = await runProcess(ffmpegPath, ["-hide_banner", "-i", sourcePath, "-af", "silencedetect=n=-38dB:d=0.12", "-f", "null", "-"]);
+  const speech = speechIntervalsFromSilenceLog(silence.stderr, layout.durationMs);
+  let cues: FittedCue[] = [];
+  let issues = [] as ReturnType<typeof validateCues>;
+  let attempt = 0;
+  for (; attempt < 5; attempt += 1) {
+    cues = prepareCues(segments, profile, speech);
+    issues = validateCues(cues, profile);
+    if (!issues.length) break;
+    profile = {
+      ...profile,
+      maxFontSize: Math.max(22, profile.maxFontSize - 3),
+      minFontSize: Math.max(22, profile.minFontSize - 2),
+    };
+  }
+  if (issues.length) throw new Error(`subtitle_preflight_failed_after_5_attempts:${JSON.stringify(issues.slice(0, 8))}`);
+  const visual = await sampleVisualFrames(sourcePath);
+  const placement = choosePlacement(visual.frames, visual.width, visual.height, profile, Math.max(...cues.map((cue) => cue.fontSize)));
+  layout.bottomMargin = Math.max(profile.safeBottom, placement.bottomMargin);
+  await writeFile(subtitlePath, createFittedAss(cues, layout), "utf8");
   try {
     await runProcess(ffmpegPath, [
       "-y", "-i", sourcePath,
-      "-vf", `ass='${escapeFilterPath(subtitlePath)}'`,
+      "-vf", `ass=filename='${escapeFilterPath(subtitlePath)}'`,
       "-c:v", "libx264", "-preset", "medium", "-crf", "20",
       "-c:a", "aac", "-b:a", "192k",
       "-movflags", "+faststart", outputPath,
     ]);
+    const { stdout } = await runProcess(ffprobePath, ["-v", "error", "-show_entries", "format=duration", "-of", "json", outputPath]);
+    const outputDurationMs = Math.round(Number((JSON.parse(stdout) as { format?: { duration?: string } }).format?.duration ?? 0) * 1_000);
+    if (Math.abs(outputDurationMs - layout.durationMs) > 120) throw new Error(`subtitle_av_duration_mismatch:${layout.durationMs}:${outputDurationMs}`);
+    await writeFile(`${outputPath}.quality.json`, JSON.stringify({
+      version: "subtitle-quality-v1",
+      qualityScore: Math.max(0, Math.round(100 - placement.collisionScore * 150)),
+      attempts: attempt + 1,
+      cueCount: cues.length,
+      cues: cues.map((cue) => ({
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        durationMs: cue.endMs - cue.startMs,
+        charactersPerSecond: Number((cue.text.length / ((cue.endMs - cue.startMs) / 1_000)).toFixed(2)),
+        lineCount: cue.lines.length,
+        lineWidths: cue.lines.map((line) => line.length),
+        fontSize: cue.fontSize,
+      })),
+      speechIntervalCount: speech.length,
+      issues: [],
+      placement,
+      inputDurationMs: layout.durationMs,
+      outputDurationMs,
+    }, null, 2), "utf8");
   } finally {
     await rm(subtitlePath, { force: true });
   }

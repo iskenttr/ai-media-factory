@@ -126,7 +126,7 @@ interface VerifyUploadInput {
 }
 
 type DatabaseRow = Record<string, SQLInputValue>;
-const currentVideoRendererVersion = "premium-ass-v2";
+const currentVideoRendererVersion = "subtitle-quality-v1";
 
 function mapUpload(row: DatabaseRow): UploadSessionRecord {
   return {
@@ -1371,7 +1371,7 @@ export class AnalysisStore {
       this.database.prepare(`UPDATE video_render_jobs SET status = 'running', lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE id = ?`)
         .run(workerId, new Date(now.getTime() + leaseMs).toISOString(), nowIso, String(row.id));
       const segments = (this.database.prepare(`
-        SELECT ts.start_ms, ts.end_ms, tr.translated_text, c.patch_json FROM localized_segments ls
+        SELECT ts.start_ms, ts.end_ms, ts.speaker_id, tr.translated_text, c.patch_json FROM localized_segments ls
         JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
         JOIN transcript_segments ts ON ts.id = ls.source_segment_id
         JOIN translation_revisions tr ON tr.id = ls.active_revision_id
@@ -1382,11 +1382,15 @@ export class AnalysisStore {
           ORDER BY latest.version DESC LIMIT 1
         )
         WHERE lt.run_id = ? ORDER BY ls.sequence ASC
-      `).all(String(row.run_id)) as DatabaseRow[]).map((segment) => ({
-        startMs: segment.patch_json ? transcriptPatchSchema.parse(JSON.parse(String(segment.patch_json))).startMs ?? Number(segment.start_ms) : Number(segment.start_ms),
-        endMs: segment.patch_json ? transcriptPatchSchema.parse(JSON.parse(String(segment.patch_json))).endMs ?? Number(segment.end_ms) : Number(segment.end_ms),
-        text: String(segment.translated_text),
-      }));
+      `).all(String(row.run_id)) as DatabaseRow[]).map((segment) => {
+        const patch = segment.patch_json ? transcriptPatchSchema.parse(JSON.parse(String(segment.patch_json))) : null;
+        return {
+          startMs: patch?.startMs ?? Number(segment.start_ms),
+          endMs: patch?.endMs ?? Number(segment.end_ms),
+          speakerId: patch?.speakerId ?? (segment.speaker_id ? String(segment.speaker_id) : undefined),
+          text: String(segment.translated_text),
+        };
+      });
       this.database.exec("COMMIT");
       return { id: String(row.id), runId: String(row.run_id), sourcePath: String(row.source_path), outputPath: String(row.output_path), leaseOwner: workerId, segments };
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }

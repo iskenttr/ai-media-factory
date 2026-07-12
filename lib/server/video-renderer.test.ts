@@ -18,13 +18,16 @@ describe("localized video subtitles", () => {
     expect(wrapped).toContain("Türkçe");
   });
 
-  it("merges short adjacent flashes into a readable cue", () => {
+  it("never merges phrases and removes cue overlap", () => {
     const cues = rebalanceSubtitleCues([
-      { startMs: 0, endMs: 320, text: "Evet." },
-      { startMs: 350, endMs: 1_200, text: "Devam edebiliriz." },
+      { startMs: 0, endMs: 1_000, text: "Evet." },
+      { startMs: 900, endMs: 1_500, text: "Devam edebiliriz." },
     ], 42);
 
-    expect(cues).toEqual([{ startMs: 0, endMs: 1_200, text: "Evet. Devam edebiliriz." }]);
+    expect(cues).toEqual([
+      { startMs: 0, endMs: 870, text: "Evet." },
+      { startMs: 900, endMs: 1_500, text: "Devam edebiliriz." },
+    ]);
   });
 
   it("uses vertical safe margins in the ASS style", () => {
