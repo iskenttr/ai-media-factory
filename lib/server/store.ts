@@ -12,6 +12,7 @@ import {
 } from "@/lib/analysis/contracts";
 import { localizationPlanSchema, type LocalizationPlan } from "@/lib/analysis/localization-plan";
 import type { SpeechObservation } from "@/lib/analysis/observations";
+import { alignSegmentToSpeakers } from "@/lib/subtitle-quality/alignment";
 import { suggestionConfidenceSchema, suggestionStatusSchema, suggestionTypeSchema, targetLanguageSchema, transcriptPatchSchema, type StudioSuggestion, type TargetLanguage, type TranscriptPatch } from "@/lib/studio/contracts";
 import { deriveStudioSuggestions } from "@/lib/studio/suggestions";
 import { translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
@@ -103,7 +104,7 @@ export interface VideoRenderJobRecord {
   sourcePath: string;
   outputPath: string;
   leaseOwner: string;
-  segments: Array<{ startMs: number; endMs: number; text: string }>;
+  segments: Array<{ startMs: number; endMs: number; text: string; speakerId?: string; words?: Array<{ text: string; startMs: number; endMs: number }> }>;
 }
 
 interface CreateUploadInput {
@@ -268,6 +269,7 @@ export class AnalysisStore {
         start_ms INTEGER NOT NULL,
         end_ms INTEGER NOT NULL,
         original_text TEXT NOT NULL,
+        word_timestamps_json TEXT,
         created_at TEXT NOT NULL,
         UNIQUE(source_transcript_id, sequence)
       );
@@ -457,6 +459,11 @@ export class AnalysisStore {
     }
     try {
       this.database.exec("ALTER TABLE video_render_jobs ADD COLUMN renderer_version TEXT NOT NULL DEFAULT 'legacy'");
+    } catch {
+      // Existing databases already have this additive migration.
+    }
+    try {
+      this.database.exec("ALTER TABLE transcript_segments ADD COLUMN word_timestamps_json TEXT");
     } catch {
       // Existing databases already have this additive migration.
     }
@@ -794,13 +801,17 @@ export class AnalysisStore {
       `).run(id, input.jobId, input.attempt, input.speech.language ? JSON.stringify(input.speech.language) : null,
         input.speech.providerId, input.speech.providerVersion, input.sourceEventId, createdAt);
       const insert = this.database.prepare(`
-        INSERT INTO transcript_segments (id, source_transcript_id, sequence, speaker_id, start_ms, end_ms, original_text, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO transcript_segments (id, source_transcript_id, sequence, speaker_id, start_ms, end_ms, original_text, word_timestamps_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      input.speech.segments.forEach((segment, index) => {
-        const midpoint = (segment.startSeconds + segment.endSeconds) / 2;
-        const speakerId = input.speakerSegments?.find((candidate) => midpoint >= candidate.start && midpoint < candidate.end)?.speakerId ?? null;
-        insert.run(randomUUID(), id, index + 1, speakerId, Math.round(segment.startSeconds * 1000), Math.round(segment.endSeconds * 1000), segment.text, createdAt);
+      let sequence = 1;
+      input.speech.segments.forEach((segment) => {
+        const parts = alignSegmentToSpeakers(segment, (input.speakerSegments ?? []).map((turn) => ({
+          speakerId: turn.speakerId, startMs: Math.round(turn.start * 1000), endMs: Math.round(turn.end * 1000),
+        })));
+        parts.forEach((part) => insert.run(randomUUID(), id, sequence++, part.speakerId,
+          Math.round(part.startSeconds * 1000), Math.round(part.endSeconds * 1000), part.text,
+          part.words?.length ? JSON.stringify(part.words) : null, createdAt));
       });
       this.database.exec("COMMIT");
       return id;
@@ -1371,7 +1382,7 @@ export class AnalysisStore {
       this.database.prepare(`UPDATE video_render_jobs SET status = 'running', lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE id = ?`)
         .run(workerId, new Date(now.getTime() + leaseMs).toISOString(), nowIso, String(row.id));
       const segments = (this.database.prepare(`
-        SELECT ts.start_ms, ts.end_ms, ts.speaker_id, tr.translated_text, c.patch_json FROM localized_segments ls
+        SELECT ts.start_ms, ts.end_ms, ts.speaker_id, ts.word_timestamps_json, tr.translated_text, c.patch_json FROM localized_segments ls
         JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
         JOIN transcript_segments ts ON ts.id = ls.source_segment_id
         JOIN translation_revisions tr ON tr.id = ls.active_revision_id
@@ -1388,6 +1399,9 @@ export class AnalysisStore {
           startMs: patch?.startMs ?? Number(segment.start_ms),
           endMs: patch?.endMs ?? Number(segment.end_ms),
           speakerId: patch?.speakerId ?? (segment.speaker_id ? String(segment.speaker_id) : undefined),
+          words: segment.word_timestamps_json ? (JSON.parse(String(segment.word_timestamps_json)) as Array<{ text: string; startSeconds: number; endSeconds: number }>).map((word) => ({
+            text: word.text, startMs: Math.round(word.startSeconds * 1000), endMs: Math.round(word.endSeconds * 1000),
+          })) : undefined,
           text: String(segment.translated_text),
         };
       });

@@ -9,3 +9,14 @@ outputs/
 !.env.example
 *.tsbuildinfo
 .DS_Store
+._*
+**/._*
+.AppleDouble/
+**/.AppleDouble/
+.Spotlight-V100/
+.Trashes/
+*.log
+*.tmp
+*.bak
+quality-reports/
+visual-diffs/

@@ -13,6 +13,9 @@ import {
   type FittedCue,
 } from "@/lib/subtitle-quality/engine";
 import { choosePlacement } from "@/lib/subtitle-quality/visual";
+import type { AlignedWord } from "@/lib/subtitle-quality/contracts";
+import { passesQualityGate, qualitySnapshot } from "@/lib/subtitle-quality/validation";
+import { nextRepair } from "@/lib/subtitle-quality/repair";
 
 const ffmpegPath = process.env.FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 const ffprobePath = process.env.FFPROBE_PATH ?? ffprobeStatic.path ?? "ffprobe";
@@ -22,6 +25,7 @@ export interface RenderSubtitle {
   endMs: number;
   text: string;
   speakerId?: string;
+  words?: AlignedWord[];
 }
 
 export interface SubtitleLayout {
@@ -179,20 +183,22 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
   let cues: FittedCue[] = [];
   let issues = [] as ReturnType<typeof validateCues>;
   let attempt = 0;
+  let repairState = { attempt: 1, profile, bottomCandidateIndex: 0 };
   for (; attempt < 5; attempt += 1) {
     cues = prepareCues(segments, profile, speech);
     issues = validateCues(cues, profile);
     if (!issues.length) break;
-    profile = {
-      ...profile,
-      maxFontSize: Math.max(22, profile.maxFontSize - 3),
-      minFontSize: Math.max(22, profile.minFontSize - 2),
-    };
+    const next = nextRepair(repairState, qualitySnapshot(cues, profile));
+    if (!next) break;
+    repairState = next;
+    profile = next.profile;
   }
   if (issues.length) throw new Error(`subtitle_preflight_failed_after_5_attempts:${JSON.stringify(issues.slice(0, 8))}`);
   const visual = await sampleVisualFrames(sourcePath);
   const placement = choosePlacement(visual.frames, visual.width, visual.height, profile, Math.max(...cues.map((cue) => cue.fontSize)));
   layout.bottomMargin = Math.max(profile.safeBottom, placement.bottomMargin);
+  const preRenderMetrics = qualitySnapshot(cues, profile, placement.collisionScore);
+  if (!passesQualityGate(preRenderMetrics)) throw new Error(`subtitle_quality_gate_failed:${JSON.stringify(preRenderMetrics)}`);
   await writeFile(subtitlePath, createFittedAss(cues, layout), "utf8");
   try {
     await runProcess(ffmpegPath, [
@@ -205,9 +211,10 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
     const { stdout } = await runProcess(ffprobePath, ["-v", "error", "-show_entries", "format=duration", "-of", "json", outputPath]);
     const outputDurationMs = Math.round(Number((JSON.parse(stdout) as { format?: { duration?: string } }).format?.duration ?? 0) * 1_000);
     if (Math.abs(outputDurationMs - layout.durationMs) > 120) throw new Error(`subtitle_av_duration_mismatch:${layout.durationMs}:${outputDurationMs}`);
+    const metrics = qualitySnapshot(cues, profile, placement.collisionScore, outputDurationMs - layout.durationMs);
     await writeFile(`${outputPath}.quality.json`, JSON.stringify({
       version: "subtitle-quality-v1",
-      qualityScore: Math.max(0, Math.round(100 - placement.collisionScore * 150)),
+      qualityScore: metrics.score,
       attempts: attempt + 1,
       cueCount: cues.length,
       cues: cues.map((cue) => ({
@@ -220,7 +227,8 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
         fontSize: cue.fontSize,
       })),
       speechIntervalCount: speech.length,
-      issues: [],
+      issues: metrics.failures,
+      metrics,
       placement,
       inputDurationMs: layout.durationMs,
       outputDurationMs,

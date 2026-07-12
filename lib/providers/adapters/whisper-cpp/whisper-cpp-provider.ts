@@ -11,6 +11,11 @@ const whisperOutputSchema = z.object({
   transcription: z.array(z.object({
     text: z.string(),
     offsets: z.object({ from: z.number(), to: z.number() }),
+    tokens: z.array(z.object({
+      text: z.string(),
+      offsets: z.object({ from: z.number(), to: z.number() }),
+      p: z.number().optional(),
+    })).optional(),
   })),
 });
 
@@ -31,7 +36,7 @@ export class WhisperCppSpeechProvider implements SpeechAnalysisProvider {
     await new Promise<void>((resolve, reject) => {
       const args = [
         ...(this.disableGpu ? ["--no-gpu"] : []),
-        "-m", this.modelPath, "-f", audioPath, "-l", "auto", "-oj", "-of", outputPrefix,
+        "-m", this.modelPath, "-f", audioPath, "-l", "auto", "-ojf", "-of", outputPrefix,
       ];
       const process = spawn(this.binaryPath, args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
@@ -46,11 +51,16 @@ export class WhisperCppSpeechProvider implements SpeechAnalysisProvider {
     try {
       const parsed = whisperOutputSchema.parse(JSON.parse(await readFile(`${outputPrefix}.json`, "utf8")));
       const segments = parsed.transcription
-        .map((segment) => ({
-          startSeconds: segment.offsets.from / 1000,
-          endSeconds: segment.offsets.to / 1000,
-          text: segment.text.trim(),
-        }))
+        .map((segment) => {
+          const words = segment.tokens?.filter((token) => token.offsets.to > token.offsets.from && !/^\[_.+_\]$/u.test(token.text.trim()))
+            .map((token) => ({ text: token.text.trim(), startSeconds: token.offsets.from / 1000, endSeconds: token.offsets.to / 1000, probability: token.p }));
+          return {
+            startSeconds: segment.offsets.from / 1000,
+            endSeconds: segment.offsets.to / 1000,
+            text: segment.text.trim(),
+            ...(words?.length ? { words } : {}),
+          };
+        })
         .filter((segment) => segment.text.length > 0 && segment.endSeconds > segment.startSeconds);
       if (segments.length === 0) throw new ProviderError("insufficient_speech", "No speech segments found");
       const code = parsed.result?.language.toLowerCase() ?? null;

@@ -1,8 +1,11 @@
+import type { AlignedWord } from "./contracts";
+
 export interface QualityCue {
   startMs: number;
   endMs: number;
   text: string;
   speakerId?: string;
+  words?: AlignedWord[];
 }
 
 export interface SpeechInterval { startMs: number; endMs: number }
@@ -161,10 +164,16 @@ function splitCueForReadingSpeed(cue: QualityCue, profile: QualityProfile, depth
   if (!split || duration < profile.minCueMs * 2 || depth >= 4) return [cue];
   const firstWeight = Math.max(1, split[0].length);
   const ratio = firstWeight / (firstWeight + Math.max(1, split[1].length));
-  const splitAt = Math.round(cue.startMs + duration * Math.min(0.7, Math.max(0.3, ratio)));
+  const proportional = Math.round(cue.startMs + duration * Math.min(0.7, Math.max(0.3, ratio)));
+  const wordBoundary = cue.words?.slice(0, -1).map((word, index) => ({ index, at: word.endMs, distance: Math.abs(word.endMs - proportional) }))
+    .filter((candidate) => candidate.at > cue.startMs + profile.minCueMs && candidate.at < cue.endMs - profile.minCueMs)
+    .sort((a, b) => a.distance - b.distance)[0];
+  const splitAt = wordBoundary?.at ?? proportional;
+  const leftWords = wordBoundary ? cue.words?.slice(0, wordBoundary.index + 1) : undefined;
+  const rightWords = wordBoundary ? cue.words?.slice(wordBoundary.index + 1) : undefined;
   return [
-    { ...cue, text: split[0], endMs: splitAt },
-    { ...cue, text: split[1], startMs: splitAt + profile.cueGapMs },
+    { ...cue, text: split[0], endMs: splitAt, words: leftWords },
+    { ...cue, text: split[1], startMs: splitAt + profile.cueGapMs, words: rightWords },
   ].flatMap((part) => splitCueForReadingSpeed(part, profile, depth + 1));
 }
 

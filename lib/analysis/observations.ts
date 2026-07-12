@@ -4,6 +4,14 @@ export interface SpeechSegment {
   startSeconds: number;
   endSeconds: number;
   text: string;
+  words?: SpeechWord[];
+}
+
+export interface SpeechWord {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+  probability?: number;
 }
 
 export interface SpeechObservation {

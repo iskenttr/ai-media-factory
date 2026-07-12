@@ -14,6 +14,16 @@ import {
 describe("subtitle quality engine", () => {
   const vertical = createQualityProfile(1080, 1920);
 
+  it("uses independent responsive profiles for vertical and horizontal video", () => {
+    const horizontal = createQualityProfile(1920, 1080);
+    expect(vertical.orientation).toBe("vertical");
+    expect(horizontal.orientation).toBe("horizontal");
+    expect(vertical.safeBottom / vertical.height).toBeGreaterThan(horizontal.safeBottom / horizontal.height);
+    const fitted = fitCue("Çığ, öğle, şüphe, İstanbul ve ğüşiöç karakterleri güvenle görünür.", horizontal);
+    expect(fitted.lines.length).toBeLessThanOrEqual(2);
+    expect(fitted.fontSize).toBeGreaterThanOrEqual(horizontal.minFontSize);
+  });
+
   it("parses voiced intervals and refines phrase boundaries", () => {
     const speech = speechIntervalsFromSilenceLog(
       "silence_start: 0.42\nsilence_end: 0.71\nsilence_start: 2.35\nsilence_end: 2.8",

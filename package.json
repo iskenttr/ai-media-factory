@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "agent:gate": "tsx scripts/engineering-gate.ts"
   },
   "dependencies": {
     "ffmpeg-static": "5.3.0",
