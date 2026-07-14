@@ -40,7 +40,7 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/opt/ai-media-factory-dev/.git /opt/ai-media-factory-dev/worktrees /opt/ai-media-factory-dev/artifacts /opt/ai-media-factory-dev/logs /opt/ai-media-factory-dev/agent/state /opt/ai-media-factory-dev/agent/reports /opt/ai-media-factory-dev/agent/tasks/queue /opt/ai-media-factory-dev/agent/tasks/processing /opt/ai-media-factory-dev/agent/tasks/completed /opt/ai-media-factory-dev/agent/tasks/failed /opt/ai-media-factory-dev/agent/tasks/blocked
+ReadWritePaths=/opt/ai-media-factory-dev/.git /opt/ai-media-factory-dev/worktrees /opt/ai-media-factory-dev/artifacts /opt/ai-media-factory-dev/logs /opt/ai-media-factory-dev/agent/state /opt/ai-media-factory-dev/agent/reports /opt/ai-media-factory-dev/agent/tasks
 ReadOnlyPaths=/opt/ai-media-factory-dev/.git/config /opt/ai-media-factory-dev/agent/policies /opt/ai-media-factory-dev/docs/AI_MEDIA_FACTORY_CONSTITUTION.md /opt/ai-media-factory-dev/agent/runtime
 InaccessiblePaths=-/opt/ai-media-factory/current -/var/lib/ai-media-factory -/var/run/docker.sock -/root/.ssh -/home/amf-agent/.ssh -/home/amf-agent/.config/gcloud
 # The broker uses the VM metadata server for keyless Vertex ADC. Commands generated
