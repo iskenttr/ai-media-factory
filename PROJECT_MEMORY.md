@@ -18,6 +18,8 @@
 - Primary rules: `AUTONOMOUS_ENGINEERING.md` and `ENGINEERING_GUIDE.md`.
 - Human-approved autonomy level: **Level 2**. Accepted candidate commits may be automatically pushed, without force, only to their matching `agent/<task-id>-...` branch on the fixed `origin` remote.
 - Still forbidden: automatic merge, protected-branch writes, production deployment/access, secret access, IAM/billing/network mutation, destructive cleanup, and unbounded model spend.
+- Level 2 runtime proof: `MIGRATION-SMOKE-001` was accepted at score 97 with 0 critical errors and automatically pushed commit `8016c7e126838bd961be95f4bd7cfbfa5bc33e37` without force. Draft PR: `https://github.com/iskenttr/ai-media-factory/pull/7`.
+- Accepted technical-debt report: commit `9d6b65730300fc37f8523a834322e84453676724`; draft PR: `https://github.com/iskenttr/ai-media-factory/pull/6`.
 
 ## Project Skill
 
