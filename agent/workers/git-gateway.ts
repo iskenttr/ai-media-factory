@@ -181,6 +181,49 @@ export async function commitCandidate(root: string, taskId: string, worktree: st
   return git(root, taskId, worktree, ["rev-parse", "HEAD"]);
 }
 
+export function acceptedCandidateRefspec(taskId: string, branch: string, commitHash: string) {
+  const normalizedTaskId = taskId.toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(normalizedTaskId)) throw new Error("candidate_publish_invalid_task_id");
+  if (!branch.startsWith(`agent/${normalizedTaskId}-`) || !/^agent\/[a-z0-9][a-z0-9/-]*$/.test(branch)) {
+    throw new Error("candidate_publish_invalid_branch");
+  }
+  if (!/^[0-9a-f]{40}$/.test(commitHash)) throw new Error("candidate_publish_invalid_commit");
+  return `${commitHash}:refs/heads/${branch}`;
+}
+
+/**
+ * Publish one already-accepted candidate through a deliberately narrow path.
+ * The generic Git gateway continues to reject push. This publisher cannot
+ * force, delete, retarget, configure, or update any non-agent branch.
+ */
+export async function publishAcceptedCandidate(root: string, taskId: string, worktree: string, branch: string, commitHash: string) {
+  const refspec = acceptedCandidateRefspec(taskId, branch, commitHash);
+  const started = Date.now();
+  const result = await new Promise<{ status: number; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn("git", ["push", "--porcelain", "origin", refspec], {
+      cwd: worktree,
+      shell: false,
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", NODE_ENV: "production" as const, GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0", SSH_ASKPASS_REQUIRE: "never",
+      },
+      stdio: ["ignore", "pipe", "pipe"] as const,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code: number | null) => resolve({ status: code ?? 1, stdout, stderr }));
+  });
+  await appendAudit(root, {
+    timestamp: new Date().toISOString(), taskId, category: "command", event: "accepted_candidate_publish",
+    detail: { branch, commitHash, remote: "origin", force: false, exitCode: result.status, durationMs: Date.now() - started },
+  });
+  if (result.status !== 0) throw new Error(`candidate_publish_failed:${result.stderr.trim()}`);
+  return { published: true as const, remote: "origin", branch, commitHash, force: false as const };
+}
+
 export async function applyCandidatePatch(root: string, taskId: string, worktree: string, patchFile: string) {
   await git(root, taskId, worktree, ["apply", "--check", patchFile]);
   await git(root, taskId, worktree, ["apply", patchFile]);

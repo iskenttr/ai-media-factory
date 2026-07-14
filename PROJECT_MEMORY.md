@@ -16,6 +16,8 @@
 - Repair attempts are bounded to five for the same failure.
 - Automatic merge and deployment are forbidden; final approval belongs to a human.
 - Primary rules: `AUTONOMOUS_ENGINEERING.md` and `ENGINEERING_GUIDE.md`.
+- Human-approved autonomy level: **Level 2**. Accepted candidate commits may be automatically pushed, without force, only to their matching `agent/<task-id>-...` branch on the fixed `origin` remote.
+- Still forbidden: automatic merge, protected-branch writes, production deployment/access, secret access, IAM/billing/network mutation, destructive cleanup, and unbounded model spend.
 
 ## Project Skill
 

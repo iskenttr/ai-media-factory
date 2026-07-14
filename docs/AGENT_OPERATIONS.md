@@ -178,7 +178,7 @@ On Compute Engine the broker obtains keyless Vertex ADC from the metadata server
 5. Confirm queue tasks are intentional and enabled.
 6. Preserve accepted branches and artifacts.
 7. Verify log rotation and available development storage.
-8. Confirm no remote push, merge, deployment, or production operation occurred.
+8. Confirm every remote push, if Level 2 publication is enabled, targeted only the accepted task's matching `agent/*` branch; confirm no force-push, merge, deployment, or production operation occurred.
 9. Generate the executive summary only from recorded evidence.
 
 Daily summary generation is a required target capability. It remains unimplemented until a tested scheduler and report generator are recorded in the final migration report.

@@ -6,7 +6,7 @@ import { writeBenchmarkReports } from "../evaluators/benchmark";
 import { sendCompletionNotification } from "../notifications/email";
 import { inspectDiff } from "../policies/diff-policy";
 import { validateTaskSafety, type EngineeringTask, type TaskState } from "../tasks/schema";
-import { commitCandidate, createTaskWorktree, inspectWorktree, resolveHead } from "../workers/git-gateway";
+import { commitCandidate, createTaskWorktree, inspectWorktree, publishAcceptedCandidate, resolveHead } from "../workers/git-gateway";
 import { implementTask } from "../workers/engineering-agent";
 import { runQa } from "../workers/qa-agent";
 import { reviewCandidate } from "../workers/security-agent";
@@ -135,6 +135,17 @@ export async function processTask(root: string, task: EngineeringTask, processin
       if (accepted) {
         inspectDiff(task, candidate.files, candidate.patch);
         runtime.commitHash = await commitCandidate(root, task.task_id, runtime.worktree, candidate.files, `agent(${task.task_id}): ${task.title}`);
+        if (process.env.AMF_AGENT_AUTO_PUSH_ACCEPTED === "true") {
+          try {
+            const publication = await publishAcceptedCandidate(root, task.task_id, runtime.worktree, runtime.branch, runtime.commitHash);
+            await writeFile(path.join(runtime.artifactDirectory, "publish-report.json"), `${JSON.stringify(publication, null, 2)}\n`);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            await writeFile(path.join(runtime.artifactDirectory, "publish-report.json"), `${JSON.stringify({ published: false, reason }, null, 2)}\n`);
+            await transition(root, task.task_id, runtime, "BLOCKED", { reason: "candidate_publish_failed" });
+            return await finalize(root, task, runtime, "passed", "passed", quality.overallScore, quality.criticalErrorCount, processingFile);
+          }
+        }
         await transition(root, task.task_id, runtime, "ACCEPTED", { score: quality.overallScore, criticalErrors: quality.criticalErrorCount });
         return await finalize(root, task, runtime, "passed", "passed", quality.overallScore, quality.criticalErrorCount, processingFile);
       }

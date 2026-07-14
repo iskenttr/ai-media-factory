@@ -104,9 +104,9 @@ Forbidden command categories include:
 - system-service control;
 - mounting, namespace entry, and host-security modification requested by a task;
 - destructive file operations;
-- Git push, force-push, remote modification, configuration modification, merge, rebase, reset, clean, pull, fetch, and release tags.
+- model-requested Git push, force-push, remote modification, configuration modification, merge, rebase, reset, clean, pull, fetch, and release tags.
 
-The trusted sandbox launcher may perform fixed namespace and mount setup that a task cannot parameterize. The trusted Git gateway may perform only the bounded worktree, inspection, staging, and commit operations required by the lifecycle.
+The trusted sandbox launcher may perform fixed namespace and mount setup that a task cannot parameterize. The trusted Git gateway may perform only the bounded worktree, inspection, staging, and commit operations required by the lifecycle. When an administrator explicitly enables Level 2 publication, a separate trusted publisher may push the exact accepted commit to its matching `agent/<task-id>-...` branch on the preconfigured `origin`. It cannot accept a model-provided remote or ref, force, delete, merge, tag, or target any other branch.
 
 All command records include the timestamp, task ID, sanitized argument vector, working directory, exit code or signal, duration, timeout status, and stdout/stderr artifact paths. Inline credentials cause rejection rather than redaction-and-execution.
 
@@ -131,9 +131,9 @@ If the sandbox cannot be established, the command fails closed. Running the comm
 
 Each task uses a branch named `agent/<task-id>-<short-description>` and a worktree under `worktrees/<task-id>`.
 
-The agent may create the task branch and worktree, inspect status and diffs, stage an approved file list, and create a candidate commit. It must not:
+The agent may create the task branch and worktree, inspect status and diffs, stage an approved file list, create a candidate commit, and—only when Level 2 publication is enabled—publish that accepted commit through the trusted publisher. It must not:
 
-- push or force-push;
+- execute a general-purpose push or any force-push;
 - modify remotes or Git configuration;
 - merge to `main`, a production branch, or another branch;
 - create release tags;
@@ -141,6 +141,8 @@ The agent may create the task branch and worktree, inspect status and diffs, sta
 - stage files that were not independently validated.
 
 The Engineering Agent cannot approve its own output. Acceptance requires deterministic task and diff validation, successful required tests, an independent QA result, an independent Security result, required quality and benchmark evidence, and an orchestrator decision.
+
+Level 2 publication is transport, not approval to merge. A published candidate remains unmerged and requires human review.
 
 ## Deterministic quality authority
 
