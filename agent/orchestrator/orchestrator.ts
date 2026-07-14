@@ -81,7 +81,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
     validateTaskSafety(task);
     if (productionRequest(task)) {
       await transition(root, task.task_id, runtime, "BLOCKED_REQUIRES_HUMAN_APPROVAL", { reason: "production_access_requested" });
-      return finalize(root, task, runtime, "not_run", "not_run", null, 0, processingFile);
+      return await finalize(root, task, runtime, "not_run", "not_run", null, 0, processingFile);
     }
     const baseCommit = await resolveHead(root, task.task_id);
     await transition(root, task.task_id, runtime, "PLANNED", { baseCommit });
@@ -110,7 +110,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
       if (!qa.passed) {
         observations.push({ iteration, score: 0, criticalErrors: 1, failureFingerprint: "qa_failed", testsPassed: false });
         await transition(root, task.task_id, runtime, "REJECTED", { reason: "tests_failed" });
-        return finalize(root, task, runtime, "failed", "not_run", null, 1, processingFile);
+        return await finalize(root, task, runtime, "failed", "not_run", null, 1, processingFile);
       }
       await transition(root, task.task_id, runtime, "RENDERING", { iteration });
       const render = task.limits.maximum_render_attempts === 0 && !task.success_criteria.render_tests_pass
@@ -129,7 +129,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
         inspectDiff(task, candidate.files, candidate.patch);
         runtime.commitHash = await commitCandidate(root, task.task_id, runtime.worktree, candidate.files, `agent(${task.task_id}): ${task.title}`);
         await transition(root, task.task_id, runtime, "ACCEPTED", { score: quality.overallScore, criticalErrors: quality.criticalErrorCount });
-        return finalize(root, task, runtime, "passed", "passed", quality.overallScore, quality.criticalErrorCount, processingFile);
+        return await finalize(root, task, runtime, "passed", "passed", quality.overallScore, quality.criticalErrorCount, processingFile);
       }
       const fingerprint = JSON.stringify({ render: render.passed, issues: quality.issues.map((issue) => issue.code).sort() });
       observations.push({ iteration, score: quality.overallScore, criticalErrors: quality.criticalErrorCount, failureFingerprint: fingerprint, testsPassed: qa.passed });
@@ -137,7 +137,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
       const hasStrategy = task.execution.kind === "gemini_patch" && task.execution.repair_strategy === "gemini_patch_review";
       if (!repair.allowed || !hasStrategy) {
         await transition(root, task.task_id, runtime, "REJECTED", { reason: hasStrategy ? repair.reason : "no_specific_repair_strategy" });
-        return finalize(root, task, runtime, "passed", render.passed ? "passed" : "failed", quality.overallScore, quality.criticalErrorCount, processingFile);
+        return await finalize(root, task, runtime, "passed", render.passed ? "passed" : "failed", quality.overallScore, quality.criticalErrorCount, processingFile);
       }
       await transition(root, task.task_id, runtime, "REPAIRING", { reason: repair.reason, iteration });
       repairContext = JSON.stringify({ quality, render, benchmark });
@@ -159,7 +159,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
     }
     // finalize always moves processingFile to a terminal directory, preventing stale entries.
     // If finalize itself throws, re-throw but the processingFile guard in finally ensures cleanup.
-    return finalize(root, task, runtime, "not_completed", "not_completed", null, 1, processingFile);
+    return await finalize(root, task, runtime, "not_completed", "not_completed", null, 1, processingFile);
   } finally {
     // Last-resort stale-file guard: if finalize was never reached (e.g. thrown inside finalize
     // itself), move the processingFile to failed so the queue is never permanently blocked.
