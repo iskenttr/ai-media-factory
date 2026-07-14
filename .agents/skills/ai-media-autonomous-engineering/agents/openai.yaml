@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Media Autonomous Engineering"
+  short_description: "Run bounded, auditable engineering workflows"
+  default_prompt: "Use $ai-media-autonomous-engineering to implement this change through the project autonomous engineering gate."
