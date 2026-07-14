@@ -158,7 +158,7 @@ The installed service should use a dedicated OS identity with no `sudo` or Docke
 - single-instance locking and restart limits;
 - administrator-owned immutable policy and configuration.
 
-`ProtectSystem=strict` is intentionally not used by the orchestrator unit: systemd's locked mounts prevent the nested user/mount namespace from constructing its fail-closed chroot. The same sandbox probe passes under `PrivateTmp`, `ProtectHome`, `PrivateDevices`, `NoNewPrivileges`, and the inaccessible-path controls; source immutability is enforced with root ownership and file modes.
+`ProtectSystem=strict` and `ProtectKernelModules` are intentionally not used by the orchestrator unit: both create locked mounts beneath paths that the nested user/mount namespace must bind into its fail-closed chroot (`/usr` includes the module tree). The same sandbox probe passes under `PrivateTmp`, `ProtectHome`, `PrivateDevices`, `NoNewPrivileges`, `ProtectKernelTunables`, `ProtectKernelLogs`, `ProtectControlGroups`, an empty capability bounding set, and the inaccessible-path controls. The unprivileged service account cannot load host modules, and source immutability is enforced with root ownership and file modes.
 
 ## Security event behavior
 
