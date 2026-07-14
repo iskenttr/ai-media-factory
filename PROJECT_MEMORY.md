@@ -26,9 +26,23 @@
 
 ## Last Verified State
 
-- Published commit containing the application and skill: `3cd9607b95b7255ecec60ac41ad6bb0da1059ace`
-- Validation at publication: lint passed, typecheck passed, 62 tests passed, 3 tests skipped, and the Next.js production build passed.
+- Autonomous Agent V2 branch: `codex/agent-v2`
+- Agent V2 draft PR: `https://github.com/iskenttr/ai-media-factory/pull/1`
+- Last verified Agent V2 commit: `d5331ab59438601143da4c1f4024d554dfe1e790`
+- Validation at publication: lint passed, typecheck passed, 159 tests passed, 3 tests skipped, and the Next.js production build passed.
+- First accepted autonomous task: `RESEARCH-TTS-010`; candidate commit `923b74ec41b97ebf0188407bd198b24d72a0f2c6`; score 97; critical errors 0.
+- First autonomous candidate draft PR: `https://github.com/iskenttr/ai-media-factory/pull/2`
 - Temporary `.codex-*` work directories, migration bundles, patches, generated media, secrets, `.env` files, and `node_modules` are not part of the published repository.
+
+## Google Compute Engine Runtime
+
+- Google Cloud project: `open-claw-502114`
+- Active development VM: `amf-agent-v2` in `europe-central2-a`, machine type `e2-standard-4`.
+- Dedicated service account: `amf-engineering-agent@open-claw-502114.iam.gserviceaccount.com` with Vertex AI user and log writer roles only.
+- The broker uses keyless metadata-server credentials and calls Vertex AI `generateContent` directly with no model tools.
+- Default local safety brakes: 50 model calls/day and USD 5/day estimated model spend; Cloud Billing budget alerts are configured at USD 25/month.
+- The legacy `openclaw-atlas` VM is stopped. Its disk, pre-migration snapshot, repository bundle, patch, and untracked-file archive are retained for recovery.
+- Automatic merge, deployment, production access, force-push, and secret access remain forbidden. Accepted candidate branches require human review.
 
 ## Retrieval Note
 
