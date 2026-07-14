@@ -9,6 +9,25 @@ function patchFiles(patch: string) {
   return [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]);
 }
 
+export function normalizeUnifiedDiffHunks(patch: string): string {
+  const lines = patch.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+    if (!match) continue;
+    let oldCount = 0;
+    let newCount = 0;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (line.startsWith("@@ ") || line.startsWith("diff --git ")) break;
+      if (line.startsWith("\\ No newline")) continue;
+      if (line.startsWith(" ") || line.startsWith("-")) oldCount += 1;
+      if (line.startsWith(" ") || line.startsWith("+")) newCount += 1;
+    }
+    lines[index] = `@@ -${match[1]},${oldCount} +${match[2]},${newCount} @@${match[3]}`;
+  }
+  return lines.join("\n");
+}
+
 export async function implementTask(root: string, task: EngineeringTask, worktree: string, artifactDirectory: string, repairContext?: string) {
   if (task.execution.kind === "approval_required") throw new Error("task_requires_human_approval");
   if (task.execution.kind === "controlled_sample") {
@@ -39,11 +58,12 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
     ...context,
   ].join("\n\n");
   const response = await requestGeminiPatch(root, task.task_id, prompt, task.limits.maximum_model_calls, task.limits.maximum_model_tokens);
-  const files = patchFiles(response.patch);
+  const normalizedPatch = normalizeUnifiedDiffHunks(response.patch);
+  const files = patchFiles(normalizedPatch);
   if (!files.length) throw new Error("model_patch_has_no_files");
   for (const file of files) assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
   const patchFile = path.join(artifactDirectory, "model.patch");
-  await writeFile(patchFile, response.patch, { mode: 0o600 });
+  await writeFile(patchFile, normalizedPatch, { mode: 0o600 });
   await applyCandidatePatch(root, task.task_id, worktree, patchFile);
   return { plan: response.plan, rationale: response.rationale, modelCalls: 1 };
 }
