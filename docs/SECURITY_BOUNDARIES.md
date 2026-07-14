@@ -160,6 +160,8 @@ The installed service should use a dedicated OS identity with no `sudo` or Docke
 
 `ProtectSystem=strict` and `ProtectKernelModules` are intentionally not used by the orchestrator unit: both create locked mounts beneath paths that the nested user/mount namespace must bind into its fail-closed chroot (`/usr` includes the module tree). The same sandbox probe passes under `PrivateTmp`, `ProtectHome`, `PrivateDevices`, `NoNewPrivileges`, `ProtectKernelTunables`, `ProtectKernelLogs`, `ProtectControlGroups`, an empty capability bounding set, and the inaccessible-path controls. The unprivileged service account cannot load host modules, and source immutability is enforced with root ownership and file modes.
 
+The sandbox does not mount the host `/dev` tree. It creates four explicit, read-only device binds for `/dev/null`, `/dev/zero`, `/dev/random`, and `/dev/urandom`; all other device paths remain absent.
+
 ## Security event behavior
 
 Any production request, forbidden path, forbidden command, secret in a diff, sandbox setup failure, policy checksum mismatch, credential exposure, unexpected cloud permission, or attempt to alter a security boundary must:

@@ -13,9 +13,12 @@ function run(executable: string, args: string[]) {
   if (result.status !== 0) throw new Error(`sandbox_setup_failed:${executable}:${args.join(" ")}:${result.stderr}`);
 }
 
-function bind(source: string, target: string, readOnly = true) {
+function bind(source: string, target: string, readOnly = true, allowDevice = false) {
   run("/usr/bin/mount", ["--bind", source, target]);
-  if (readOnly) run("/usr/bin/mount", ["-o", "remount,bind,ro,nosuid,nodev", target]);
+  if (readOnly) {
+    const options = allowDevice ? "remount,bind,ro,nosuid" : "remount,bind,ro,nosuid,nodev";
+    run("/usr/bin/mount", ["-o", options, target]);
+  }
 }
 
 async function main() {
@@ -51,7 +54,10 @@ async function main() {
   // linker cannot follow the symlink chain inside the chroot and ffmpeg fails with
   // "error while loading shared libraries: libblas.so.3: cannot open shared object file".
   try { bind("/etc/alternatives", path.join(root, "etc/alternatives")); } catch { /* host may not use update-alternatives; non-fatal */ }
-  for (const file of ["null", "zero", "random", "urandom"]) bind(`/dev/${file}`, path.join(root, "dev", file));
+  // Expose only the four standard character devices required by Node, Git, and
+  // test runners. A nodev remount would make these explicit device binds
+  // unusable; the sandbox never exposes the host /dev tree.
+  for (const file of ["null", "zero", "random", "urandom"]) bind(`/dev/${file}`, path.join(root, "dev", file), true, true);
   bind(worktree, path.join(root, "workspace"), false);
   bind(path.join(worktree, ".git"), path.join(root, "workspace/.git"));
   bind(artifacts, path.join(root, "artifacts"), false);
