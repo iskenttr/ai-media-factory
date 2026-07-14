@@ -3,5 +3,5 @@
 [[rule]]
 toolName = "*"
 decision = "deny"
-priority = 9999
+priority = 999
 denyMessage = "AI Media Factory broker policy does not permit Gemini CLI tools."
