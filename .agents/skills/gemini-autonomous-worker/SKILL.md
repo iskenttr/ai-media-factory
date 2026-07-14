@@ -28,6 +28,7 @@ Use Gemini CLI as an untrusted proposal worker. Keep Git preparation, patch appl
 
 - Use headless JSON output and a hard process timeout.
 - Use `--approval-mode plan` so Gemini may inspect but cannot edit or execute mutating tools.
+- Install the root-owned admin policy in `agent/runtime/gemini-deny-tools.toml` so all built-in, extension, and MCP tools are excluded from the model context.
 - Require a strict response containing `plan`, unified `patch`, and `rationale`.
 - Stream stdout and stderr to mode-`0600` artifacts, then parse usage statistics from the outer Gemini JSON response.
 - Allow one Gemini process at a time. Bound calls, input/output tokens, wall time, iterations, render attempts, and estimated daily cost.

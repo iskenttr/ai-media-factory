@@ -28,6 +28,8 @@ install -o root -g root -m 0644 "$ROOT/agent/runtime/ai-media-factory-agent.serv
 install -o root -g root -m 0644 "$ROOT/agent/runtime/ai-media-factory-agent-summary.service" /etc/systemd/system/ai-media-factory-agent-summary.service
 install -o root -g root -m 0644 "$ROOT/agent/runtime/ai-media-factory-agent-summary.timer" /etc/systemd/system/ai-media-factory-agent-summary.timer
 install -o root -g root -m 0644 "$ROOT/agent/runtime/ai-media-factory-agent.logrotate" /etc/logrotate.d/ai-media-factory-agent
+install -d -o root -g root -m 0755 /etc/gemini-cli/policies
+install -o root -g root -m 0644 "$ROOT/agent/runtime/gemini-deny-tools.toml" /etc/gemini-cli/policies/deny-all-tools.toml
 
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0750 \
   "$ROOT/worktrees" "$ROOT/artifacts" "$ROOT/logs" "$ROOT/agent/state" "$ROOT/agent/reports" \
