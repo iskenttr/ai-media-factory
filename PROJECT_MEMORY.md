@@ -32,6 +32,8 @@
 - Validation at publication: lint passed, typecheck passed, 159 tests passed, 3 tests skipped, and the Next.js production build passed.
 - First accepted autonomous task: `RESEARCH-TTS-010`; candidate commit `923b74ec41b97ebf0188407bd198b24d72a0f2c6`; score 97; critical errors 0.
 - First autonomous candidate draft PR: `https://github.com/iskenttr/ai-media-factory/pull/2`
+- Fresh Vertex research batch accepted `RESEARCH-DIARIZATION-001`, `RESEARCH-DUBBING-001`, and `RESEARCH-SUBTITLE-QUALITY-001`; draft PRs are `#4`, `#5`, and `#3` respectively. Each used one model call, scored 97, and reported 0 critical errors.
+- `RESEARCH-FFMPEG-001` failed closed with `model_patch_has_no_files`; no candidate commit or PR was created. Its model response and audit evidence remain on the VM for a bounded retry.
 - Temporary `.codex-*` work directories, migration bundles, patches, generated media, secrets, `.env` files, and `node_modules` are not part of the published repository.
 
 ## Google Compute Engine Runtime
