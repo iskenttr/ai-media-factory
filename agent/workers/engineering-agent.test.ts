@@ -11,7 +11,7 @@ describe("normalizeUnifiedDiffHunks", () => {
       "+++ b/docs/new.md",
       "@@ -0,0 +1,114 @@",
       "+first",
-      "+second",
+      "second",
       "+third",
       "",
     ].join("\n");

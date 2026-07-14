@@ -14,11 +14,18 @@ export function normalizeUnifiedDiffHunks(patch: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
     if (!match) continue;
+    const diffStart = lines.slice(0, index).findLastIndex((line) => line.startsWith("diff --git "));
+    const isNewFile = lines.slice(diffStart, index).some((line) => line === "--- /dev/null");
     let oldCount = 0;
     let newCount = 0;
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const line = lines[cursor];
+      let line = lines[cursor];
       if (line.startsWith("@@ ") || line.startsWith("diff --git ")) break;
+      if (cursor === lines.length - 1 && line === "") continue;
+      if (isNewFile && !/^[ +\\-]/.test(line)) {
+        lines[cursor] = `+${line}`;
+        line = lines[cursor];
+      }
       if (line.startsWith("\\ No newline")) continue;
       if (line.startsWith(" ") || line.startsWith("-")) oldCount += 1;
       if (line.startsWith(" ") || line.startsWith("+")) newCount += 1;
