@@ -32,7 +32,8 @@ export function normalizeUnifiedDiffHunks(patch: string): string {
     }
     lines[index] = `@@ -${match[1]},${oldCount} +${match[2]},${newCount} @@${match[3]}`;
   }
-  return lines.join("\n");
+  const normalized = lines.join("\n");
+  return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
 }
 
 export async function implementTask(root: string, task: EngineeringTask, worktree: string, artifactDirectory: string, repairContext?: string) {

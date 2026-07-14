@@ -21,7 +21,7 @@ describe("normalizeUnifiedDiffHunks", () => {
   });
 
   it("counts context, additions, and removals independently", () => {
-    const patch = "@@ -4,99 +4,99 @@\n context\n-old\n+new\n";
+    const patch = "@@ -4,99 +4,99 @@\n context\n-old\n+new";
     expect(normalizeUnifiedDiffHunks(patch)).toBe("@@ -4,2 +4,2 @@\n context\n-old\n+new\n");
   });
 });
