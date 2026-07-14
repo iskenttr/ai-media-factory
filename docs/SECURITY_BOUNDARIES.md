@@ -162,6 +162,8 @@ The installed service should use a dedicated OS identity with no `sudo` or Docke
 
 The sandbox does not mount the host `/dev` tree. It creates four explicit, read-only device binds for `/dev/null`, `/dev/zero`, `/dev/random`, and `/dev/urandom`; all other device paths remain absent.
 
+Media-artifact completeness is an acceptance gate only when the task contract requires rendering. A contract that explicitly skips rendering must still pass its test, security, path, diff, and critical-error gates, but it is not rejected for intentionally absent video artifacts.
+
 ## Security event behavior
 
 Any production request, forbidden path, forbidden command, secret in a diff, sandbox setup failure, policy checksum mismatch, credential exposure, unexpected cloud permission, or attempt to alter a security boundary must:

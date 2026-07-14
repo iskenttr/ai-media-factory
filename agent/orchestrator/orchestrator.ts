@@ -16,6 +16,7 @@ import { claimNextTask, finishTaskFile } from "./task-queue";
 import { writeDashboardSnapshot } from "./dashboard";
 import { numericSetting } from "../policies/limits";
 import { mayAttemptRepair, type RepairObservation } from "../../lib/subtitle-quality/v3";
+import { acceptanceEvidencePassed } from "./acceptance";
 
 interface TaskRuntime {
   state: TaskState;
@@ -124,7 +125,13 @@ export async function processTask(root: string, task: EngineeringTask, processin
       await transition(root, task.task_id, runtime, "EVALUATING", { iteration });
       const quality = evaluateSmokeQuality(`${task.task_id}-${iteration}`);
       const benchmark = await writeBenchmarkReports(runtime.artifactDirectory, `${task.task_id}-${iteration}`, quality);
-      const accepted = render.passed && quality.criticalErrorCount <= task.success_criteria.maximum_critical_errors && benchmark.artifactsComplete;
+      const accepted = acceptanceEvidencePassed({
+        renderPassed: render.passed,
+        renderSkippedByContract: "skipped" in render && render.skipped === true,
+        criticalErrorCount: quality.criticalErrorCount,
+        maximumCriticalErrors: task.success_criteria.maximum_critical_errors,
+        renderArtifactsComplete: benchmark.artifactsComplete,
+      });
       if (accepted) {
         inspectDiff(task, candidate.files, candidate.patch);
         runtime.commitHash = await commitCandidate(root, task.task_id, runtime.worktree, candidate.files, `agent(${task.task_id}): ${task.title}`);
