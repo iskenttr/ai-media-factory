@@ -42,6 +42,8 @@ install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0750 \
 chown "$AGENT_USER:$AGENT_GROUP" "$ROOT"
 chmod 0555 "$ROOT"
 chown -R "$AGENT_USER:$AGENT_GROUP" "$ROOT/.git"
+chown root:root "$ROOT/.git/config"
+chmod 0444 "$ROOT/.git/config"
 
 find "$ROOT/agent/orchestrator" "$ROOT/agent/workers" "$ROOT/agent/evaluators" "$ROOT/agent/policies" "$ROOT/agent/prompts" "$ROOT/agent/notifications" "$ROOT/agent/runtime" "$ROOT/lib/subtitle-quality/v3" "$ROOT/scripts" -type f \( -name '*.ts' -o -name '*.json' -o -name '*.md' -o -name '*.sh' \) -print0 \
   | sort -z \

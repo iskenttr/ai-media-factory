@@ -29,7 +29,7 @@ The orchestrator is responsible for:
 
 ### Model broker
 
-The model broker is the only component intended to call Gemini. It receives bounded context, uses a configured absolute executable, disables model tools, requests structured output, limits calls, records reported usage, and saves the raw response as a restricted artifact.
+The model broker is the only component intended to call Gemini. It receives bounded context, obtains a short-lived access token from the Compute Engine metadata server, calls Vertex `generateContent` without a tools field, requires schema-constrained JSON, limits calls, records reported usage, and saves the raw response as a restricted artifact.
 
 The broker does not execute model-proposed commands. A returned patch is parsed, path-checked, and applied through the Git gateway.
 

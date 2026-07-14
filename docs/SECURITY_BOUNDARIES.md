@@ -151,15 +151,14 @@ Email credentials, when used, belong only to the notifier. Dry-run mode requires
 The installed service should use a dedicated OS identity with no `sudo` or Docker membership and an administrator-owned unit with:
 
 - `NoNewPrivileges=true`;
-- `ProtectSystem=strict`;
 - protected home, kernel, control-group, clock, and device settings;
 - empty capability and ambient-capability sets;
-- explicit writable state, logs, worktrees, and artifacts;
+- an administrator-owned, non-writable source tree and Git configuration, with only Git metadata, state, logs, task queues, worktrees, and artifacts delegated to the service identity;
 - production, credential, GCloud, SSH, and Docker-socket paths marked inaccessible;
 - single-instance locking and restart limits;
 - administrator-owned immutable policy and configuration.
 
-The current repository contains no evidence that these host controls have been installed. Installation and verification must be reported separately.
+`ProtectSystem=strict` is intentionally not used by the orchestrator unit: systemd's locked mounts prevent the nested user/mount namespace from constructing its fail-closed chroot. The same sandbox probe passes under `PrivateTmp`, `ProtectHome`, `PrivateDevices`, `NoNewPrivileges`, and the inaccessible-path controls; source immutability is enforced with root ownership and file modes.
 
 ## Security event behavior
 
