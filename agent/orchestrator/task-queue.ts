@@ -12,7 +12,12 @@ export async function claimNextTask(root: string): Promise<{ task: EngineeringTa
   for (const file of files) {
     const source = path.join(queued, file);
     const destination = path.join(processing, file);
-    try { await rename(source, destination); } catch { continue; }
+    try {
+      await rename(source, destination);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`task_queue_claim_failed:${file}:${detail}`, { cause: error });
+    }
     try {
       const task = validateTaskSafety(JSON.parse(await readFile(destination, "utf8")));
       if (!task.enabled) {
