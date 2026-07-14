@@ -1,7 +1,0 @@
-# The model is a proposal generator, not an execution environment. A global
-# deny rule removes built-in, extension, and MCP tools from model context.
-[[rule]]
-toolName = "*"
-decision = "deny"
-priority = 999
-denyMessage = "AI Media Factory broker policy does not permit Gemini CLI tools."
