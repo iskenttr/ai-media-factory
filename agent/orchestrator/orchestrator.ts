@@ -113,9 +113,13 @@ export async function processTask(root: string, task: EngineeringTask, processin
         return finalize(root, task, runtime, "failed", "not_run", null, 1, processingFile);
       }
       await transition(root, task.task_id, runtime, "RENDERING", { iteration });
-      renderAttempts += 1;
-      if (renderAttempts > task.limits.maximum_render_attempts) throw new Error("render_attempt_limit_exhausted");
-      const render = await renderSmokeArtifact(root, task, runtime.worktree, runtime.artifactDirectory);
+      const render = task.limits.maximum_render_attempts === 0 && !task.success_criteria.render_tests_pass
+        ? { passed: true, skipped: true, reason: "render_not_required_by_task_contract" }
+        : await (async () => {
+            renderAttempts += 1;
+            if (renderAttempts > task.limits.maximum_render_attempts) throw new Error("render_attempt_limit_exhausted");
+            return renderSmokeArtifact(root, task, runtime.worktree, runtime.artifactDirectory);
+          })();
       await writeFile(path.join(runtime.artifactDirectory, "render-report.json"), `${JSON.stringify(render, null, 2)}\n`);
       await transition(root, task.task_id, runtime, "EVALUATING", { iteration });
       const quality = evaluateSmokeQuality(`${task.task_id}-${iteration}`);

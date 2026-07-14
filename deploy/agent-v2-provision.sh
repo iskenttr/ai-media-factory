@@ -10,12 +10,14 @@ apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl ffmpeg git jq logrotate ripgrep xz-utils
 
-if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'Number(process.versions.node.split(`.`)[0])')" -lt 22 ]; then
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sh -
+if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'Number(process.versions.node.split(`.`)[0])')" -lt 26 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_26.x | sh -
   apt-get install -y --no-install-recommends nodejs
 fi
 
 npm install --global @google/gemini-cli
+ln -sfn /usr/bin/ffmpeg /usr/local/bin/ffmpeg
+ln -sfn /usr/bin/ffprobe /usr/local/bin/ffprobe
 command -v gemini >/dev/null
 command -v ffmpeg >/dev/null
 command -v ffprobe >/dev/null

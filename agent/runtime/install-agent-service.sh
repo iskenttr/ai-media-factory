@@ -34,6 +34,9 @@ install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0750 \
   "$ROOT/agent/tasks/queue" "$ROOT/agent/tasks/processing" "$ROOT/agent/tasks/completed" \
   "$ROOT/agent/tasks/failed" "$ROOT/agent/tasks/blocked"
 chown -R "$AGENT_USER:$AGENT_GROUP" "$ROOT/.git"
+# The reviewed source tree remains administrator-owned while Git metadata and
+# task worktrees belong to the service identity. Trust only this exact path.
+git config --system --add safe.directory "$ROOT"
 
 find "$ROOT/agent/orchestrator" "$ROOT/agent/workers" "$ROOT/agent/evaluators" "$ROOT/agent/policies" "$ROOT/agent/prompts" "$ROOT/agent/notifications" "$ROOT/agent/runtime" "$ROOT/lib/subtitle-quality/v3" "$ROOT/scripts" -type f \( -name '*.ts' -o -name '*.json' -o -name '*.md' -o -name '*.sh' \) -print0 \
   | sort -z \
