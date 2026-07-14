@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { appendAudit } from "../orchestrator/audit-log";
@@ -109,14 +108,13 @@ function is429(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Core request — spawns one Gemini CLI call with a hard timeout,
-// streams stdout/stderr to artifact files while running, and
-// always writes both artifacts before returning or throwing.
+// Core request — calls Vertex AI directly with a metadata-server access token,
+// a strict response schema, no tools, and a hard timeout. Both artifacts are
+// written before returning or throwing.
 // ---------------------------------------------------------------------------
-async function callGeminiOnce(
+async function callVertexOnce(
   root: string,
   taskId: string,
-  executable: string,
   requestedModel: string,
   location: string,
   project: string,
@@ -138,70 +136,88 @@ async function callGeminiOnce(
   const stdoutArtifact = path.join(artifactDir, `gemini-stdout-${callIndex}.txt`);
   const stderrArtifact = path.join(artifactDir, `gemini-stderr-${callIndex}.txt`);
 
-  // Open files for streaming write
+  // Open files before the request so every attempt has durable evidence.
   const stdoutFh = await open(stdoutArtifact, "w", 0o600);
   const stderrFh = await open(stderrArtifact, "w", 0o600);
-
-  const args = [
-    "--model", requestedModel,
-    "--output-format", "json",
-    "--approval-mode", "plan",
-    "--skip-trust",
-    "--prompt", prompt,
-  ];
-
   const started = Date.now();
   let stdout = "";
   let stderr = "";
   let timedOut = false;
+  let status = 1;
+  const controller = new AbortController();
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, hardTimeoutMs);
 
-  const result = await new Promise<{ status: number }>(
-    (resolve, reject) => {
-      const child = spawn(executable, args, {
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"] as const,
-        env: {
-          PATH: "/usr/local/bin:/usr/bin:/bin",
-          HOME: "/tmp/amf-gemini-home",
-          NODE_ENV: "test" as const,
-          GOOGLE_GENAI_USE_VERTEXAI: "true",
-          GOOGLE_CLOUD_PROJECT: project,
-          GOOGLE_CLOUD_LOCATION: location,
-          GEMINI_CLI_TRUST_WORKSPACE: "true",
+  try {
+    const tokenResponse = await fetch(
+      "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+      { headers: { "Metadata-Flavor": "Google" }, signal: controller.signal },
+    );
+    if (!tokenResponse.ok) throw new Error(`vertex_metadata_token_failed:${tokenResponse.status}`);
+    const tokenPayload = await tokenResponse.json() as { access_token?: string };
+    if (!tokenPayload.access_token) throw new Error("vertex_metadata_token_missing");
+
+    const endpoint = `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(requestedModel)}:generateContent`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenPayload.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              plan: { type: "ARRAY", items: { type: "STRING" } },
+              patch: { type: "STRING" },
+              rationale: { type: "STRING" },
+            },
+            required: ["plan", "patch", "rationale"],
+          },
         },
+      }),
+      signal: controller.signal,
+    });
+    const payload = await response.json() as Record<string, unknown>;
+    if (!response.ok) {
+      status = response.status;
+      stderr = JSON.stringify(payload);
+    } else {
+      const candidates = payload.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }> | undefined;
+      const responseText = candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof responseText !== "string") throw new Error("vertex_response_text_missing");
+      const usage = (payload.usageMetadata ?? {}) as Record<string, unknown>;
+      const modelVersion = typeof payload.modelVersion === "string" ? payload.modelVersion : requestedModel;
+      const tokens = {
+        input: Number(usage.promptTokenCount ?? 0),
+        prompt: Number(usage.promptTokenCount ?? 0),
+        candidates: Number(usage.candidatesTokenCount ?? 0),
+        total: Number(usage.totalTokenCount ?? 0),
+        cached: Number(usage.cachedContentTokenCount ?? 0),
+        thoughts: Number(usage.thoughtsTokenCount ?? 0),
+        tool: Number(usage.toolUsePromptTokenCount ?? 0),
+      };
+      stdout = JSON.stringify({
+        response: responseText,
+        model: modelVersion,
+        stats: { models: { [modelVersion]: { tokens } }, tools: { totalCalls: 0 } },
       });
+      status = 0;
+    }
+  } catch (error) {
+    if (timedOut || (error instanceof Error && error.name === "AbortError")) timedOut = true;
+    stderr = error instanceof Error ? error.message : String(error);
+  } finally {
+    clearTimeout(watchdog);
+  }
 
-      // Hard-timeout watchdog
-      const watchdog = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch { /* already dead */ }
-        }, 3_000);
-      }, hardTimeoutMs);
-
-      child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-        stdout += chunk;
-        // Incremental write — fire-and-forget; errors are non-fatal
-        void stdoutFh.write(chunk).catch(() => {});
-      });
-
-      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-        stderr += chunk;
-        void stderrFh.write(chunk).catch(() => {});
-      });
-
-      child.once("error", (err) => {
-        clearTimeout(watchdog);
-        reject(err);
-      });
-
-      child.once("close", (code: number | null) => {
-        clearTimeout(watchdog);
-        resolve({ status: code ?? 1 });
-      });
-    },
-  );
+  await stdoutFh.write(stdout).catch(() => {});
+  await stderrFh.write(stderr).catch(() => {});
 
   // Always close and flush artifact files
   await stdoutFh.close().catch(() => {});
@@ -210,7 +226,7 @@ async function callGeminiOnce(
   const durationMs = Date.now() - started;
 
   return {
-    status: result.status,
+    status,
     stdout,
     stderr,
     durationMs,
@@ -250,14 +266,8 @@ async function _requestGeminiPatch(
   maximumCalls: number,
   maximumTokens: number,
 ): Promise<ModelResponse> {
-  const executable = process.env.AMF_AGENT_GEMINI_COMMAND;
-  if (!executable || !path.isAbsolute(executable)) {
-    throw new Error("gemini_keyless_runtime_not_configured");
-  }
-
   const usageFile = path.join(root, "agent/state/model-usage.jsonl");
   await mkdir(path.dirname(usageFile), { recursive: true });
-  await mkdir("/tmp/amf-gemini-home", { recursive: true, mode: 0o700 });
 
   // Budget accounting
   let calls = 0;
@@ -351,8 +361,8 @@ async function _requestGeminiPatch(
       await new Promise<void>((resolve) => setTimeout(resolve, 60_000));
     }
 
-    const callResult = await callGeminiOnce(
-      root, taskId, executable, requestedModel, location, project,
+    const callResult = await callVertexOnce(
+      root, taskId, requestedModel, location, project,
       prompt, calls + 1, hardTimeoutMs,
     );
 
