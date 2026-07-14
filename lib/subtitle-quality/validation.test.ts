@@ -18,6 +18,11 @@ describe("quality validation, repair, and regression", () => {
     expect(passesQualityGate(snapshot)).toBe(true);
   });
 
+  it("enforces the 20ms audio/video duration limit", () => {
+    expect(qualitySnapshot(cues, profile, 0, 20).failures).not.toContain("media_duration");
+    expect(qualitySnapshot(cues, profile, 0, 21).failures).toContain("media_duration");
+  });
+
   it("classifies a regression and bounds repairs to five attempts", () => {
     const before = qualitySnapshot(cues, profile, 0.02, 0);
     const regressed = cues.map((cue, index) => index ? { ...cue, startMs: cues[0].endMs } : cue);

@@ -1,0 +1,32 @@
+{
+  "task_id": "TEST-001",
+  "title": "Increase autonomous agent test coverage",
+  "priority": "high",
+  "objective": "Add focused tests for agent lifecycle, task safety, sandbox denial, state transitions, repair limits, reports, and failure handling without weakening existing assertions.",
+  "enabled": false,
+  "allowed_paths": ["agent/orchestrator/**", "agent/workers/**", "agent/evaluators/**", "agent/notifications/**", "agent/tasks/**", "lib/subtitle-quality/v3/**"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 5,
+    "maximum_changed_files": 20,
+    "maximum_diff_lines": 2000,
+    "maximum_render_attempts": 2,
+    "maximum_model_calls": 5,
+    "maximum_execution_ms": 1800000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "agent", "lib/subtitle-quality/v3"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["agent/orchestrator/orchestrator.ts", "agent/tasks/schema.ts", "lib/subtitle-quality/v3/index.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

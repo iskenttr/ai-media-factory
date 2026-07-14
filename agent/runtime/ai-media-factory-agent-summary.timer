@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily AI Media Factory autonomous engineering summary
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Istanbul
+Persistent=true
+RandomizedDelaySec=5m
+Unit=ai-media-factory-agent-summary.service
+
+[Install]
+WantedBy=timers.target

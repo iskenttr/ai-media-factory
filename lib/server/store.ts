@@ -127,7 +127,7 @@ interface VerifyUploadInput {
 }
 
 type DatabaseRow = Record<string, SQLInputValue>;
-const currentVideoRendererVersion = "subtitle-quality-v1";
+const currentVideoRendererVersion = "subtitle-quality-v2";
 
 function mapUpload(row: DatabaseRow): UploadSessionRecord {
   return {

@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 const environment = process.env.AMF_ENVIRONMENT?.toLowerCase();
 if (environment === "production") throw new Error("engineering_gate_refuses_production");
 
-const branch = spawnSync("git", ["branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
+const gitBranch = spawnSync("git", ["branch", "--show-current"], { encoding: "utf8" });
+const branch = process.env.AMF_VERIFIED_BRANCH ?? gitBranch.stdout?.trim();
 if (!branch || branch === "main" || branch === "master") throw new Error(`engineering_gate_refuses_branch:${branch || "detached"}`);
 
 for (const [command, args] of [

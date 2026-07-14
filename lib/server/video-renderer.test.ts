@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createAssSubtitles, rebalanceSubtitleCues, wrapSubtitleText } from "./video-renderer";
+import { createAssSubtitles, createFittedAss, rebalanceSubtitleCues, wrapSubtitleText } from "./video-renderer";
 
 describe("localized video subtitles", () => {
   it("writes ordered ASS dialogue with escaped user text", () => {
@@ -36,5 +36,30 @@ describe("localized video subtitles", () => {
     });
     expect(result).toContain("PlayResX: 1080");
     expect(result).toContain(",2,81,81,269,1");
+  });
+
+  it("emits a deterministic Turkish font and valid ASS size override", () => {
+    const result = createFittedAss([{
+      startMs: 0,
+      endMs: 1_000,
+      text: "Türkçe altyazı",
+      lines: ["Türkçe altyazı"],
+      fontSize: 44,
+    }], {
+      width: 1080,
+      height: 1920,
+      orientation: "vertical",
+      fontSize: 56,
+      horizontalMargin: 97,
+      bottomMargin: 595,
+      maxCharactersPerLine: 30,
+    });
+
+    expect(result).toContain("Style: Localized,DejaVu Sans,56");
+    expect(result).toContain("{\\fs44}Türkçe altyazı");
+    expect([...result].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 && ![9, 10, 13].includes(code);
+    })).toBe(false);
   });
 });

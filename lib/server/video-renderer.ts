@@ -151,11 +151,105 @@ function fittedAssText(cue: FittedCue) {
     .replaceAll("{", "\\{").replaceAll("}", "\\}").replaceAll("\u0000", "\\N");
 }
 
-function createFittedAss(cues: FittedCue[], layout: SubtitleLayout) {
+export function createFittedAss(cues: FittedCue[], layout: SubtitleLayout) {
   const dialogue = cues.map((cue) =>
     `Dialogue: 0,${assTime(cue.startMs)},${assTime(cue.endMs)},Localized,,0,0,0,,{\\fs${cue.fontSize}}${fittedAssText(cue)}`,
   ).join("\n");
-  return `[Script Info]\nScriptType: v4.00+\nPlayResX: ${layout.width}\nPlayResY: ${layout.height}\nScaledBorderAndShadow: yes\nWrapStyle: 2\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Localized,Arial,${layout.fontSize},&H00FFFFFF,&H000000FF,&H00101010,&H70000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(layout.fontSize * 0.065))},${Math.max(1, Math.round(layout.fontSize * 0.02))},2,${layout.horizontalMargin},${layout.horizontalMargin},${layout.bottomMargin},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${dialogue}\n`;
+  return `[Script Info]\nScriptType: v4.00+\nPlayResX: ${layout.width}\nPlayResY: ${layout.height}\nScaledBorderAndShadow: yes\nWrapStyle: 2\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Localized,DejaVu Sans,${layout.fontSize},&H00FFFFFF,&H000000FF,&H00101010,&H70000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(layout.fontSize * 0.065))},${Math.max(1, Math.round(layout.fontSize * 0.02))},2,${layout.horizontalMargin},${layout.horizontalMargin},${layout.bottomMargin},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${dialogue}\n`;
+}
+
+interface RenderEvidenceSample {
+  cueIndex: number;
+  timestampMs: number;
+  changedPixelRatio: number;
+  safePixelRatio: number;
+  withinSafeBounds: boolean;
+  bounds: { left: number; right: number; top: number; bottom: number } | null;
+}
+
+interface RenderEvidence {
+  passed: boolean;
+  sampleCount: number;
+  minimumChangedPixelRatio: number;
+  samples: RenderEvidenceSample[];
+}
+
+async function extractGrayFrame(sourcePath: string, timestampMs: number, width: number, height: number) {
+  return runBinaryProcess(ffmpegPath, [
+    "-hide_banner", "-loglevel", "error", "-ss", (timestampMs / 1_000).toFixed(3), "-i", sourcePath,
+    "-frames:v", "1", "-vf", `scale=${width}:${height},format=gray`,
+    "-f", "rawvideo", "-pix_fmt", "gray", "-",
+  ]);
+}
+
+async function collectRenderEvidence(
+  sourcePath: string,
+  outputPath: string,
+  cues: FittedCue[],
+  profile: ReturnType<typeof createQualityProfile>,
+  bottomMargin: number,
+): Promise<RenderEvidence> {
+  const width = 180;
+  const height = Math.round(width * profile.height / profile.width);
+  const scaleX = width / profile.width;
+  const scaleY = height / profile.height;
+  const maximumFontSize = Math.max(...cues.map((cue) => cue.fontSize));
+  const baseline = height - bottomMargin * scaleY;
+  const bandTop = Math.max(0, Math.floor(baseline - maximumFontSize * 3 * scaleY));
+  const bandBottom = Math.min(height, Math.ceil(baseline + maximumFontSize * 0.65 * scaleY));
+  const safeLeft = Math.floor(profile.safeLeft * scaleX);
+  const safeRight = Math.ceil(width - profile.safeRight * scaleX);
+  const sampleTotal = Math.min(8, cues.length);
+  const cueIndices = [...new Set(Array.from({ length: sampleTotal }, (_, index) =>
+    Math.round(index * (cues.length - 1) / Math.max(1, sampleTotal - 1))))];
+  const samples: RenderEvidenceSample[] = [];
+
+  for (const cueIndex of cueIndices) {
+    const cue = cues[cueIndex];
+    const timestampMs = Math.round((cue.startMs + cue.endMs) / 2);
+    const [source, rendered] = await Promise.all([
+      extractGrayFrame(sourcePath, timestampMs, width, height),
+      extractGrayFrame(outputPath, timestampMs, width, height),
+    ]);
+    let changed = 0;
+    let safeChanged = 0;
+    let left = width;
+    let right = -1;
+    let top = height;
+    let bottom = -1;
+    for (let y = bandTop; y < bandBottom; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = y * width + x;
+        if (Math.abs(source[offset] - rendered[offset]) < 28) continue;
+        changed += 1;
+        if (x >= safeLeft && x <= safeRight) safeChanged += 1;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+    const bandPixels = Math.max(1, (bandBottom - bandTop) * width);
+    const changedPixelRatio = changed / bandPixels;
+    const safePixelRatio = changed ? safeChanged / changed : 0;
+    const bounds = changed ? { left, right, top, bottom } : null;
+    samples.push({
+      cueIndex,
+      timestampMs,
+      changedPixelRatio: Number(changedPixelRatio.toFixed(5)),
+      safePixelRatio: Number(safePixelRatio.toFixed(5)),
+      withinSafeBounds: Boolean(bounds && safePixelRatio >= 0.9),
+      bounds,
+    });
+  }
+
+  const minimumChangedPixelRatio = Math.min(...samples.map((sample) => sample.changedPixelRatio));
+  return {
+    passed: samples.every((sample) => sample.changedPixelRatio >= 0.001 && sample.withinSafeBounds),
+    sampleCount: samples.length,
+    minimumChangedPixelRatio,
+    samples,
+  };
 }
 
 export function createAssSubtitles(segments: RenderSubtitle[], layout: SubtitleLayout = {
@@ -165,7 +259,7 @@ export function createAssSubtitles(segments: RenderSubtitle[], layout: SubtitleL
   const dialogue = cues.map((segment) =>
     `Dialogue: 0,${assTime(segment.startMs)},${assTime(segment.endMs)},Localized,,0,0,0,,${assText(segment.text, layout.maxCharactersPerLine)}`,
   ).join("\n");
-  return `[Script Info]\nScriptType: v4.00+\nPlayResX: ${layout.width}\nPlayResY: ${layout.height}\nScaledBorderAndShadow: yes\nWrapStyle: 2\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Localized,Arial,${layout.fontSize},&H00FFFFFF,&H000000FF,&H00101010,&H70000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(layout.fontSize * 0.065))},${Math.max(1, Math.round(layout.fontSize * 0.02))},2,${layout.horizontalMargin},${layout.horizontalMargin},${layout.bottomMargin},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${dialogue}\n`;
+  return `[Script Info]\nScriptType: v4.00+\nPlayResX: ${layout.width}\nPlayResY: ${layout.height}\nScaledBorderAndShadow: yes\nWrapStyle: 2\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Localized,DejaVu Sans,${layout.fontSize},&H00FFFFFF,&H000000FF,&H00101010,&H70000000,-1,0,0,0,100,100,0,0,1,${Math.max(2, Math.round(layout.fontSize * 0.065))},${Math.max(1, Math.round(layout.fontSize * 0.02))},2,${layout.horizontalMargin},${layout.horizontalMargin},${layout.bottomMargin},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${dialogue}\n`;
 }
 
 function escapeFilterPath(filePath: string) {
@@ -210,10 +304,12 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
     ]);
     const { stdout } = await runProcess(ffprobePath, ["-v", "error", "-show_entries", "format=duration", "-of", "json", outputPath]);
     const outputDurationMs = Math.round(Number((JSON.parse(stdout) as { format?: { duration?: string } }).format?.duration ?? 0) * 1_000);
-    if (Math.abs(outputDurationMs - layout.durationMs) > 120) throw new Error(`subtitle_av_duration_mismatch:${layout.durationMs}:${outputDurationMs}`);
+    if (Math.abs(outputDurationMs - layout.durationMs) > 20) throw new Error(`subtitle_av_duration_mismatch:${layout.durationMs}:${outputDurationMs}`);
+    const renderEvidence = await collectRenderEvidence(sourcePath, outputPath, cues, profile, layout.bottomMargin);
+    if (!renderEvidence.passed) throw new Error(`subtitle_render_evidence_missing:${JSON.stringify(renderEvidence)}`);
     const metrics = qualitySnapshot(cues, profile, placement.collisionScore, outputDurationMs - layout.durationMs);
     await writeFile(`${outputPath}.quality.json`, JSON.stringify({
-      version: "subtitle-quality-v1",
+      version: "subtitle-quality-v2",
       qualityScore: metrics.score,
       attempts: attempt + 1,
       cueCount: cues.length,
@@ -230,6 +326,7 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
       issues: metrics.failures,
       metrics,
       placement,
+      renderEvidence,
       inputDurationMs: layout.durationMs,
       outputDurationMs,
     }, null, 2), "utf8");

@@ -9,7 +9,7 @@ RUN git clone https://github.com/ggml-org/whisper.cpp.git /src/whisper.cpp \
 FROM docker:29-cli AS docker-cli
 
 FROM node:26-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libgomp1 sqlite3 tini \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg fontconfig fonts-dejavu-core libgomp1 sqlite3 tini \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=whisper-builder /src/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli

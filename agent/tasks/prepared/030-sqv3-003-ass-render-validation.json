@@ -1,0 +1,32 @@
+{
+  "task_id": "SQV3-003",
+  "title": "Add ASS render validation",
+  "priority": "high",
+  "objective": "Validate generated ASS syntax and rendered subtitle evidence deterministically, including malformed events, missing glyph output, clipping, and frame-bound violations.",
+  "enabled": false,
+  "allowed_paths": ["lib/subtitle-quality/v3/**", "lib/server/video-renderer.ts", "lib/server/video-renderer.test.ts"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0.5,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 5,
+    "maximum_changed_files": 10,
+    "maximum_diff_lines": 1600,
+    "maximum_render_attempts": 4,
+    "maximum_model_calls": 5,
+    "maximum_execution_ms": 1800000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "lib/subtitle-quality/v3", "lib/server/video-renderer.test.ts"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["lib/subtitle-quality/v3/ass-parser.ts", "lib/server/video-renderer.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}
