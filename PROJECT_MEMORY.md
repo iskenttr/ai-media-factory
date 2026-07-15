@@ -26,7 +26,7 @@
 
 ## Last Verified State
 
-- Published commit: `3cd9607b95b7255ecec60ac41ad6bb0da1059ace`
+- Published commit: `537198d` (merged: 3 PRs on openhands/autonomous-integration)
 - Validation at publication: lint passed, typecheck passed, 62 tests passed, 3 tests skipped, and the Next.js production build passed.
 - Temporary `.codex-*` work directories, migration bundles, patches, generated media, secrets, `.env` files, and `node_modules` are not part of the published repository.
 
