@@ -1410,14 +1410,27 @@ export class AnalysisStore {
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
 
+  renewVideoRenderLease(renderId: string, workerId: string, leaseMs: number) {
+    const now = new Date();
+    return this.database.prepare(`
+      UPDATE video_render_jobs SET lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'running' AND lease_owner = ?
+    `).run(
+      new Date(now.getTime() + leaseMs).toISOString(),
+      now.toISOString(),
+      renderId,
+      workerId,
+    ).changes === 1;
+  }
+
   finishVideoRender(renderId: string, workerId: string) {
-    return this.database.prepare(`UPDATE video_render_jobs SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL, updated_at = ? WHERE id = ? AND lease_owner = ?`)
+    return this.database.prepare(`UPDATE video_render_jobs SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?`)
       .run(new Date().toISOString(), renderId, workerId).changes === 1;
   }
 
   failVideoRender(renderId: string, workerId: string, errorCode: string) {
-    this.database.prepare(`UPDATE video_render_jobs SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = ? WHERE id = ? AND lease_owner = ?`)
-      .run(errorCode, new Date().toISOString(), renderId, workerId);
+    return this.database.prepare(`UPDATE video_render_jobs SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?`)
+      .run(errorCode, new Date().toISOString(), renderId, workerId).changes === 1;
   }
 
   getVideoRenderForOwner(renderId: string, ownerHash: string) {
