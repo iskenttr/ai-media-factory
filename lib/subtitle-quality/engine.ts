@@ -1,4 +1,5 @@
 import type { AlignedWord } from "./contracts";
+import { normalizeText } from "@/lib/text-utils";
 
 export interface QualityCue {
   startMs: number;
@@ -37,8 +38,6 @@ export interface QualityIssue {
   cueIndex: number;
   detail: string;
 }
-
-const normalize = (text: string) => text.normalize("NFC").replace(/\s+/gu, " ").trim();
 
 export function createQualityProfile(width: number, height: number): QualityProfile {
   const vertical = height > width;
@@ -88,12 +87,12 @@ export function refineSpeechBoundaries(cues: QualityCue[], speech: SpeechInterva
     ...cue,
     startMs: Math.max(0, closestBoundary(cue.startMs, starts, 420)),
     endMs: closestBoundary(cue.endMs, ends, 520),
-    text: normalize(cue.text),
+    text: normalizeText(cue.text),
   }));
 }
 
 function splitCandidates(text: string) {
-  const words = normalize(text).split(" ");
+  const words = normalizeText(text).split(" ");
   const candidates: number[] = [];
   for (let index = 1; index < words.length; index += 1) {
     if (/[.!?…;,:]$/u.test(words[index - 1])) candidates.push(index);
@@ -130,7 +129,7 @@ export function weightedTextWidth(text: string) {
 }
 
 export function wrapBalanced(text: string): [string] | [string, string] {
-  const normalized = normalize(text);
+  const normalized = normalizeText(text);
   const split = semanticSplit(normalized);
   if (!split) return [normalized];
   const singleWidth = weightedTextWidth(normalized);
@@ -158,7 +157,7 @@ function splitCueForReadingSpeed(cue: QualityCue, profile: QualityProfile, depth
   const safeWidth = profile.width - profile.safeLeft - profile.safeRight;
   const layoutTooDense = Math.max(...wrapped.map(weightedTextWidth)) * profile.minFontSize > safeWidth;
   const needsSplit = duration > profile.maxCueMs
-    || normalize(cue.text).length / (duration / 1_000) > profile.maxCps * 1.15
+    || normalizeText(cue.text).length / (duration / 1_000) > profile.maxCps * 1.15
     || layoutTooDense;
   const split = needsSplit ? semanticSplit(cue.text) : null;
   if (!split || duration < profile.minCueMs * 2 || depth >= 4) return [cue];
@@ -179,9 +178,9 @@ function splitCueForReadingSpeed(cue: QualityCue, profile: QualityProfile, depth
 
 export function normalizeCueTiming(input: QualityCue[], profile: QualityProfile) {
   const split = input
-    .filter((cue) => normalize(cue.text) && cue.endMs > cue.startMs)
+    .filter((cue) => normalizeText(cue.text) && cue.endMs > cue.startMs)
     .sort((a, b) => a.startMs - b.startMs)
-    .flatMap((cue) => splitCueForReadingSpeed({ ...cue, text: normalize(cue.text) }, profile));
+    .flatMap((cue) => splitCueForReadingSpeed({ ...cue, text: normalizeText(cue.text) }, profile));
   const result: QualityCue[] = [];
   for (let index = 0; index < split.length; index += 1) {
     const cue = { ...split[index] };
@@ -201,10 +200,10 @@ export function validateCues(cues: FittedCue[], profile: QualityProfile): Qualit
   const issues: QualityIssue[] = [];
   cues.forEach((cue, index) => {
     const duration = cue.endMs - cue.startMs;
-    if (!normalize(cue.text)) issues.push({ code: "empty", cueIndex: index, detail: "Cue text is empty" });
+    if (!normalizeText(cue.text)) issues.push({ code: "empty", cueIndex: index, detail: "Cue text is empty" });
     if (index > 0 && cues[index - 1].endMs >= cue.startMs) issues.push({ code: "overlap", cueIndex: index, detail: "Cue overlaps previous cue" });
     if (duration < 100 || duration > profile.maxCueMs) issues.push({ code: "duration", cueIndex: index, detail: `${duration}ms` });
-    if (normalize(cue.text).length / (duration / 1_000) > profile.maxCps * 1.15) issues.push({ code: "reading_speed", cueIndex: index, detail: "CPS exceeds hard limit" });
+    if (normalizeText(cue.text).length / (duration / 1_000) > profile.maxCps * 1.15) issues.push({ code: "reading_speed", cueIndex: index, detail: "CPS exceeds hard limit" });
     if (cue.lines.length > 2) issues.push({ code: "line_count", cueIndex: index, detail: "More than two lines" });
     const available = profile.width - profile.safeLeft - profile.safeRight;
     if (Math.max(...cue.lines.map(weightedTextWidth)) * cue.fontSize > available + 1) issues.push({ code: "text_bounds", cueIndex: index, detail: "Measured line exceeds safe width" });
