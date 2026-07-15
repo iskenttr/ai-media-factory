@@ -1275,23 +1275,47 @@ export class AnalysisStore {
   }
 
   queueTranslationRegeneration(runId: string, sourceSegmentId: string, ownerHash: string) {
-    const row = this.database.prepare(`
-      SELECT ls.id
-      FROM localized_segments ls
-      JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
-      JOIN localization_runs r ON r.id = lt.run_id
-      JOIN localization_projects p ON p.id = r.project_id
-      JOIN analysis_jobs j ON j.id = p.job_id
-      WHERE r.id = ? AND ls.source_segment_id = ? AND j.owner_hash = ?
-    `).get(runId, sourceSegmentId, ownerHash) as DatabaseRow | undefined;
-    if (!row) return null;
-    const now = new Date().toISOString();
-    const jobId = randomUUID();
-    this.database.prepare(`
-      INSERT INTO translation_regeneration_jobs (id, run_id, source_segment_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'queued', ?, ?)
-    `).run(jobId, runId, sourceSegmentId, now, now);
-    this.appendLocalizationEvent(runId, "translation_segment_regeneration_queued", { sourceSegmentId, jobId }, `${jobId}:queued`);
+    this.database.exec("BEGIN IMMEDIATE");
+    let jobId: string | null = null;
+    let created = false;
+    try {
+      const row = this.database.prepare(`
+        SELECT ls.id
+        FROM localized_segments ls
+        JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+        JOIN localization_runs r ON r.id = lt.run_id
+        JOIN localization_projects p ON p.id = r.project_id
+        JOIN analysis_jobs j ON j.id = p.job_id
+        WHERE r.id = ? AND ls.source_segment_id = ? AND j.owner_hash = ?
+      `).get(runId, sourceSegmentId, ownerHash) as DatabaseRow | undefined;
+      if (!row) {
+        this.database.exec("COMMIT");
+        return null;
+      }
+      const existing = this.database.prepare(`
+        SELECT id FROM translation_regeneration_jobs
+        WHERE run_id = ? AND source_segment_id = ? AND status IN ('queued', 'running')
+        ORDER BY created_at ASC, id ASC LIMIT 1
+      `).get(runId, sourceSegmentId) as DatabaseRow | undefined;
+      if (existing) {
+        jobId = String(existing.id);
+      } else {
+        const now = new Date().toISOString();
+        jobId = randomUUID();
+        this.database.prepare(`
+          INSERT INTO translation_regeneration_jobs (id, run_id, source_segment_id, status, created_at, updated_at)
+          VALUES (?, ?, ?, 'queued', ?, ?)
+        `).run(jobId, runId, sourceSegmentId, now, now);
+        created = true;
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    if (created) {
+      this.appendLocalizationEvent(runId, "translation_segment_regeneration_queued", { sourceSegmentId, jobId }, `${jobId}:queued`);
+    }
     return jobId;
   }
 
