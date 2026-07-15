@@ -32,8 +32,9 @@
 
 - Autonomous Agent V2 branch: `codex/agent-v2`
 - Agent V2 draft PR: `https://github.com/iskenttr/ai-media-factory/pull/1`
-- Last verified Agent V2 commit: `d5331ab59438601143da4c1f4024d554dfe1e790`
-- Validation at publication: lint passed, typecheck passed, 159 tests passed, 3 tests skipped, and the Next.js production build passed.
+- Last verified Agent V2 commit: `f3f31fc4598d3340c68e41c206fa0677e192d88a`.
+- Human-approved reliability merges on 2026-07-15: render lease renewal and stale-worker protection in PR `#8` (`e2f4f4a4c3d34dbd2b626ecd12a31d72d568651e`), plus race-safe idempotent upload verification in PR `#9` (`f3f31fc4598d3340c68e41c206fa0677e192d88a`). Both were merged only into `codex/agent-v2`; `main` and production were not changed.
+- Validation after combining PRs `#8` and `#9`: lint passed, typecheck passed, 182 tests passed, 3 tests skipped, and the Next.js production build passed. The focused store and video-render-worker suite passed 17/17 tests.
 - First accepted autonomous task: `RESEARCH-TTS-010`; candidate commit `923b74ec41b97ebf0188407bd198b24d72a0f2c6`; score 97; critical errors 0.
 - First autonomous candidate draft PR: `https://github.com/iskenttr/ai-media-factory/pull/2`
 - Fresh Vertex research batch accepted `RESEARCH-DIARIZATION-001`, `RESEARCH-DUBBING-001`, and `RESEARCH-SUBTITLE-QUALITY-001`; draft PRs are `#4`, `#5`, and `#3` respectively. Each used one model call, scored 97, and reported 0 critical errors.
@@ -48,6 +49,7 @@
 - The broker uses keyless metadata-server credentials and calls Vertex AI `generateContent` directly with no model tools.
 - Default local safety brakes: 50 model calls/day and USD 5/day estimated model spend; Cloud Billing budget alerts are configured at USD 25/month.
 - The legacy `openclaw-atlas` VM is stopped. Its disk, pre-migration snapshot, repository bundle, patch, and untracked-file archive are retained for recovery.
+- On 2026-07-15 the active development VM was updated to Agent V2 commit `f3f31fc4598d3340c68e41c206fa0677e192d88a`; the systemd service and application heartbeat were healthy, and both the queue and processing directories were empty.
 - Automatic merge, deployment, production access, force-push, and secret access remain forbidden. Accepted candidate branches require human review.
 
 ## Retrieval Note
