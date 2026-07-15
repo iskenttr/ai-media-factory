@@ -1,10 +1,15 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { z } from "zod";
 
 import type { SpeakerAnalysisProvider } from "../../contracts/speaker-analysis-provider";
 import { ProviderError } from "../../provider-errors";
+import { serverConfig } from "../../../server/config";
+import {
+  ProviderProcessError,
+  runBoundedProviderProcess,
+  type ProviderProcessOptions,
+} from "../provider-process";
 
 const runnerOutputSchema = z.object({
   providerVersion: z.string().min(1),
@@ -26,27 +31,42 @@ export class PyannoteCommunitySpeakerProvider implements SpeakerAnalysisProvider
       process.cwd(),
       "lib/providers/adapters/pyannote-community-1/run_diarization.py",
     ),
+    private readonly processOptions: ProviderProcessOptions = {
+      timeoutMs: serverConfig.pyannoteProcessTimeoutMs,
+      killGraceMs: serverConfig.pyannoteProcessKillGraceMs,
+      maxOutputBytes: serverConfig.pyannoteProcessMaxOutputBytes,
+      errorPrefix: "speaker_provider",
+      inputMode: "ignore",
+    },
   ) {}
 
   async analyze(audioPath: string) {
-    const output = await new Promise<string>((resolve, reject) => {
-      const process = spawn(this.pythonPath, [this.runnerPath, this.modelPath, audioPath], {
-        env: { ...globalThis.process.env, PYANNOTE_METRICS_ENABLED: "0" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      process.stdout.setEncoding("utf8");
-      process.stderr.setEncoding("utf8");
-      process.stdout.on("data", (chunk: string) => (stdout += chunk));
-      process.stderr.on("data", (chunk: string) => (stderr += chunk));
-      process.on("error", (error) => reject(new ProviderError("provider_failure", error.message)));
-      process.on("close", (code) => code === 0
-        ? resolve(stdout)
-        : reject(new ProviderError("provider_failure", stderr.slice(-800) || `pyannote exited with ${code}`)));
-    });
+    let output: string;
+    try {
+      output = await runBoundedProviderProcess(
+        this.pythonPath,
+        [this.runnerPath, this.modelPath, audioPath],
+        undefined,
+        {
+          ...this.processOptions,
+          errorPrefix: "speaker_provider",
+          inputMode: "ignore",
+          env: { ...globalThis.process.env, PYANNOTE_METRICS_ENABLED: "0" },
+        },
+      );
+    } catch (error) {
+      throw new ProviderError(
+        "provider_failure",
+        error instanceof ProviderProcessError ? error.code : "speaker_provider_failed",
+      );
+    }
 
-    const parsed = runnerOutputSchema.parse(JSON.parse(output));
+    let parsed: z.infer<typeof runnerOutputSchema>;
+    try {
+      parsed = runnerOutputSchema.parse(JSON.parse(output));
+    } catch {
+      throw new ProviderError("provider_failure", "speaker_provider_invalid_response");
+    }
     if (parsed.segments.length === 0) {
       throw new ProviderError("insufficient_speech", "No speaker evidence found");
     }

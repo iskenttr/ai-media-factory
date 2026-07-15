@@ -61,4 +61,62 @@ describe("PyannoteCommunitySpeakerProvider contract", () => {
       code: "insufficient_speech",
     });
   });
+
+  it("returns a stable failure without exposing stderr or command paths", async () => {
+    directory = await mkdtemp(path.join(os.tmpdir(), "amf-pyannote-failure-"));
+    const runner = path.join(directory, "secret-runner.sh");
+    const model = path.join(directory, "secret-model");
+    const audio = path.join(directory, "secret-audio.wav");
+    await Promise.all([writeFile(model, "model"), writeFile(audio, "audio")]);
+    await writeFile(runner, "#!/bin/sh\nprintf '%s' 'secret-runtime-detail' >&2\nexit 8\n");
+    await chmod(runner, 0o755);
+
+    const error = await new PyannoteCommunitySpeakerProvider("/bin/sh", model, runner).analyze(audio).catch((reason: unknown) => reason);
+    expect(error).toEqual(expect.objectContaining({ code: "provider_failure", message: "speaker_provider_failed" }));
+    expect(String(error)).not.toContain("secret-runtime-detail");
+    expect(String(error)).not.toContain(runner);
+    expect(String(error)).not.toContain(model);
+    expect(String(error)).not.toContain(audio);
+  });
+
+  it("bounds provider output with a stable speaker-provider code", async () => {
+    directory = await mkdtemp(path.join(os.tmpdir(), "amf-pyannote-output-"));
+    const runner = path.join(directory, "runner.sh");
+    const model = path.join(directory, "model");
+    const audio = path.join(directory, "audio.wav");
+    await Promise.all([writeFile(model, "model"), writeFile(audio, "audio")]);
+    await writeFile(runner, "#!/bin/sh\nwhile true; do printf '0123456789' >&2; done\n");
+    await chmod(runner, 0o755);
+    const provider = new PyannoteCommunitySpeakerProvider("/bin/sh", model, runner, {
+      timeoutMs: 5_000, killGraceMs: 50, maxOutputBytes: 64,
+    });
+
+    await expect(provider.analyze(audio)).rejects.toEqual(expect.objectContaining({
+      message: "speaker_provider_output_limit_exceeded",
+    }));
+  });
+
+  it("maps a bounded timeout to a stable speaker-provider error", async () => {
+    directory = await mkdtemp(path.join(os.tmpdir(), "amf-pyannote-timeout-"));
+    const runner = path.join(directory, "runner.js");
+    const model = path.join(directory, "model");
+    const audio = path.join(directory, "audio.wav");
+    await Promise.all([writeFile(model, "model"), writeFile(audio, "audio")]);
+    await writeFile(runner, "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);\n");
+    const provider = new PyannoteCommunitySpeakerProvider(process.execPath, model, runner, {
+      timeoutMs: 500, killGraceMs: 100, maxOutputBytes: 128,
+    });
+
+    await expect(provider.analyze(audio)).rejects.toEqual(expect.objectContaining({
+      message: "speaker_provider_timeout",
+    }));
+  });
+
+  it("does not expose runner-supplied error text from an invalid response", async () => {
+    const { provider, audio } = await providerFor({ error: "secret-model-detail" });
+    const error = await provider.analyze(audio).catch((reason: unknown) => reason);
+
+    expect(error).toEqual(expect.objectContaining({ message: "speaker_provider_invalid_response" }));
+    expect(String(error)).not.toContain("secret-model-detail");
+  });
 });

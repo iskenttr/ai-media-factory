@@ -61,6 +61,17 @@ describe("runBoundedProviderProcess", () => {
     await expect(translationFailure).rejects.toEqual(expect.objectContaining({ code: "translation_provider_failed" }));
   });
 
+  it("supports stable speaker-provider codes", async () => {
+    const failure = runBoundedProviderProcess(process.execPath, [
+      "-e",
+      "process.stderr.write('private-audio-path'); process.exit(5)",
+    ], undefined, { ...options, errorPrefix: "speaker_provider", inputMode: "ignore" });
+
+    const error = await failure.catch((reason: unknown) => reason);
+    expect(error).toEqual(expect.objectContaining({ code: "speaker_provider_failed" }));
+    expect(String(error)).not.toContain("private-audio-path");
+  });
+
   it("escalates an ignored SIGTERM to SIGKILL after the grace period", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "amf-provider-process-"));
     temporaryDirectories.push(directory);
