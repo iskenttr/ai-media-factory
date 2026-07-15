@@ -82,7 +82,7 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
   }
   const constitution = await readFile(path.join(root, "docs/AI_MEDIA_FACTORY_CONSTITUTION.md"), "utf8");
   const rolePrompt = await readFile(path.join(root, "agent/prompts/engineering-agent.md"), "utf8");
-  const prompt = [
+  const promptParts = [
     constitution,
     rolePrompt,
     "Return JSON only with keys plan:string[], patch:string, rationale:string.",
@@ -92,15 +92,41 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
     `ALLOWED_PATHS: ${task.allowed_paths.join(", ")}`,
     repairContext ? `REPAIR_CONTEXT: ${repairContext.slice(0, 30_000)}` : "INITIAL_IMPLEMENTATION",
     ...context,
-  ].join("\n\n");
-  const response = await requestGeminiPatch(root, task.task_id, prompt, task.limits.maximum_model_calls, task.limits.maximum_model_tokens);
-  const metadataNormalized = await normalizeUnifiedDiffMetadata(response.patch, worktree);
-  const normalizedPatch = normalizeUnifiedDiffHunks(metadataNormalized);
-  const files = patchFiles(normalizedPatch);
-  if (!files.length) throw new Error("model_patch_has_no_files");
-  for (const file of files) assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
-  const patchFile = path.join(artifactDirectory, "model.patch");
-  await writeFile(patchFile, normalizedPatch, { mode: 0o600 });
-  await applyCandidatePatch(root, task.task_id, worktree, patchFile);
-  return { plan: response.plan, rationale: response.rationale, modelCalls: 1 };
+  ];
+  const maximumPatchAttempts = task.execution.repair_strategy === "gemini_patch_review"
+    ? Math.min(2, task.limits.maximum_model_calls)
+    : 1;
+  let patchRepairContext = "";
+  let lastError: unknown = new Error("model_patch_not_attempted");
+  for (let attempt = 1; attempt <= maximumPatchAttempts; attempt += 1) {
+    const prompt = [
+      ...promptParts,
+      patchRepairContext || "NO_PATCH_APPLY_FAILURE",
+    ].join("\n\n");
+    const response = await requestGeminiPatch(root, task.task_id, prompt, task.limits.maximum_model_calls, task.limits.maximum_model_tokens);
+    const metadataNormalized = await normalizeUnifiedDiffMetadata(response.patch, worktree);
+    const normalizedPatch = normalizeUnifiedDiffHunks(metadataNormalized);
+    const files = patchFiles(normalizedPatch);
+    if (!files.length) throw new Error("model_patch_has_no_files");
+    for (const file of files) assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
+    const attemptPatchFile = path.join(artifactDirectory, `model-patch-${attempt}.patch`);
+    const patchFile = path.join(artifactDirectory, "model.patch");
+    await writeFile(attemptPatchFile, normalizedPatch, { mode: 0o600 });
+    await writeFile(patchFile, normalizedPatch, { mode: 0o600 });
+    try {
+      await applyCandidatePatch(root, task.task_id, worktree, patchFile);
+      return { plan: response.plan, rationale: response.rationale, modelCalls: attempt };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maximumPatchAttempts) break;
+      const detail = error instanceof Error ? error.message : String(error);
+      patchRepairContext = [
+        "PATCH_APPLY_REPAIR_REQUIRED",
+        `APPLY_ERROR: ${detail.slice(0, 4_000)}`,
+        "The previous patch was rejected before application. Produce a complete replacement unified diff against the exact FILE contents in this prompt. Do not repeat stale hunk line numbers or invalid file metadata.",
+        `REJECTED_PATCH:\n${normalizedPatch.slice(0, 30_000)}`,
+      ].join("\n");
+    }
+  }
+  throw lastError;
 }
