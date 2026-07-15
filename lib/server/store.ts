@@ -15,7 +15,7 @@ import type { SpeechObservation } from "@/lib/analysis/observations";
 import { alignSegmentToSpeakers } from "@/lib/subtitle-quality/alignment";
 import { suggestionConfidenceSchema, suggestionStatusSchema, suggestionTypeSchema, targetLanguageSchema, transcriptPatchSchema, type StudioSuggestion, type TargetLanguage, type TranscriptPatch } from "@/lib/studio/contracts";
 import { deriveStudioSuggestions } from "@/lib/studio/suggestions";
-import { translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
+import { translationProviderResultSchema, translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
 
 import { serverConfig } from "./config";
 
@@ -1133,36 +1133,82 @@ export class AnalysisStore {
   }
 
   saveTranslationProviderResult(runId: string, result: TranslationProviderResult) {
-    const localized = this.database.prepare(`
-      SELECT ls.id FROM localized_segments ls JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
-      WHERE lt.run_id = ? AND ls.source_segment_id = ?
-    `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
-    if (!localized) throw new Error("localized_segment_not_found");
-    const now = new Date().toISOString();
-    const existing = this.database.prepare(`SELECT id FROM translation_provider_results WHERE run_id = ? AND source_segment_id = ?`)
-      .get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
-    if (existing) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const localized = this.database.prepare(`
+        SELECT ls.id FROM localized_segments ls JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+        WHERE lt.run_id = ? AND ls.source_segment_id = ?
+      `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
+      if (!localized) throw new Error("localized_segment_not_found");
+
+      const now = new Date().toISOString();
+      const existing = this.database.prepare(`
+        SELECT id, result_json FROM translation_provider_results WHERE run_id = ? AND source_segment_id = ?
+      `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
+      const providerResultId = existing ? String(existing.id) : randomUUID();
+      const authoritativeResult = existing
+        ? translationProviderResultSchema.parse(JSON.parse(String(existing.result_json)))
+        : result;
+      if (!existing) {
+        this.database.prepare(`
+          INSERT INTO translation_provider_results (id, run_id, source_segment_id, availability, result_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(providerResultId, runId, result.sourceSegmentId, result.availability, JSON.stringify(result), now);
+      }
+
+      const active = this.database.prepare(`
+        SELECT tr.origin FROM localized_segments ls
+        LEFT JOIN translation_revisions tr ON tr.id = ls.active_revision_id
+        WHERE ls.id = ?
+      `).get(String(localized.id)) as DatabaseRow;
+      const preservesUserRevision = active.origin === "user";
+      if (authoritativeResult.availability === "available" && authoritativeResult.translatedText && authoritativeResult.timingAssessment) {
+        let providerRevision = this.database.prepare(`
+          SELECT id, version FROM translation_revisions WHERE provider_result_id = ?
+        `).get(providerResultId) as DatabaseRow | undefined;
+        if (!providerRevision) {
+          const version = Number((this.database.prepare(`
+            SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?
+          `).get(String(localized.id)) as DatabaseRow).version) + 1;
+          const revisionId = randomUUID();
+          this.database.prepare(`
+            INSERT INTO translation_revisions (
+              id, localized_segment_id, version, translated_text, origin, provider_result_id, created_at
+            ) VALUES (?, ?, ?, ?, 'provider', ?, ?)
+          `).run(revisionId, String(localized.id), version, authoritativeResult.translatedText, providerResultId, now);
+          providerRevision = { id: revisionId, version };
+        }
+        if (!preservesUserRevision) {
+          this.database.prepare(`
+            UPDATE localized_segments
+            SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ?
+            WHERE id = ?
+          `).run(
+            String(providerRevision.id),
+            JSON.stringify(authoritativeResult.timingAssessment),
+            now,
+            String(localized.id),
+          );
+        }
+      } else if (!preservesUserRevision) {
+        this.database.prepare(`
+          UPDATE localized_segments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?
+        `).run(authoritativeResult.failureReason ?? "translation_unavailable", now, String(localized.id));
+      }
+
       const current = this.database.prepare(`
         SELECT ls.status, tr.version FROM localized_segments ls
         LEFT JOIN translation_revisions tr ON tr.id = ls.active_revision_id WHERE ls.id = ?
       `).get(String(localized.id)) as DatabaseRow;
-      return { status: String(current.status) as "translated" | "failed", revision: current.version === null ? null : Number(current.version) };
+      this.database.exec("COMMIT");
+      return {
+        status: String(current.status) as "translated" | "failed",
+        revision: current.version === null ? null : Number(current.version),
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
     }
-    const providerResultId = randomUUID();
-    this.database.prepare(`INSERT INTO translation_provider_results (id, run_id, source_segment_id, availability, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(providerResultId, runId, result.sourceSegmentId, result.availability, JSON.stringify(result), now);
-    if (result.availability === "available" && result.translatedText && result.timingAssessment) {
-      const version = Number((this.database.prepare(`SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?`).get(String(localized.id)) as DatabaseRow).version) + 1;
-      const revisionId = randomUUID();
-      this.database.prepare(`INSERT INTO translation_revisions (id, localized_segment_id, version, translated_text, origin, provider_result_id, created_at) VALUES (?, ?, ?, ?, 'provider', ?, ?)`)
-        .run(revisionId, String(localized.id), version, result.translatedText, providerResultId, now);
-      this.database.prepare(`UPDATE localized_segments SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ? WHERE id = ?`)
-        .run(revisionId, JSON.stringify(result.timingAssessment), now, String(localized.id));
-      return { status: "translated" as const, revision: version };
-    }
-    this.database.prepare(`UPDATE localized_segments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?`)
-      .run(result.failureReason ?? "translation_unavailable", now, String(localized.id));
-    return { status: "failed" as const, revision: null };
   }
 
   saveLocalizedSegmentUserRevision(runId: string, sourceSegmentId: string, ownerHash: string, translatedText: string) {
