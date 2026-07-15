@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "immutableAtRuntime": true,
+  "productionRoots": [
+    "/opt/ai-media-factory/current",
+    "/var/lib/ai-media-factory"
+  ],
+  "credentialRoots": [
+    "~/.ssh",
+    "~/.config/gcloud"
+  ],
+  "forbiddenSockets": [
+    "/var/run/docker.sock"
+  ],
+  "forbiddenGitOperations": [
+    "push",
+    "force-push",
+    "remote",
+    "merge",
+    "rebase",
+    "tag",
+    "config"
+  ]
+}

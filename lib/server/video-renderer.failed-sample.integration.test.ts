@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -20,11 +22,14 @@ describe.skipIf(!configured)("failed vertical sample regression", () => {
       issues: unknown[];
       inputDurationMs: number;
       outputDurationMs: number;
+      renderEvidence: { passed: boolean; sampleCount: number; minimumChangedPixelRatio: number };
       cues: Array<{ startMs: number; endMs: number; lineCount: number; fontSize: number }>;
     };
     expect(report.attempts).toBeLessThanOrEqual(5);
     expect(report.issues).toEqual([]);
-    expect(Math.abs(report.inputDurationMs - report.outputDurationMs)).toBeLessThanOrEqual(120);
+    expect(Math.abs(report.inputDurationMs - report.outputDurationMs)).toBeLessThanOrEqual(20);
+    expect(report.renderEvidence).toMatchObject({ passed: true, sampleCount: 8 });
+    expect(report.renderEvidence.minimumChangedPixelRatio).toBeGreaterThanOrEqual(0.001);
     expect(report.cues.every((cue) => cue.lineCount <= 2 && cue.fontSize >= 38)).toBe(true);
     for (let index = 1; index < report.cues.length; index += 1) {
       expect(report.cues[index - 1].endMs).toBeLessThan(report.cues[index].startMs);

@@ -20,7 +20,7 @@ export function qualitySnapshot(
   const failures = [...new Set([
     ...issues.map(classify),
     ...(collisionScore > 0.16 ? ["collision" as const] : []),
-    ...(Math.abs(durationDeltaMs) > 120 ? ["media_duration" as const] : []),
+    ...(Math.abs(durationDeltaMs) > 20 ? ["media_duration" as const] : []),
   ])];
   const maximumCps = cues.reduce((maximum, cue) => Math.max(maximum, cue.text.length / ((cue.endMs - cue.startMs) / 1_000)), 0);
   const softPenalty = Math.max(0, maximumCps - profile.maxCps) * 1.5

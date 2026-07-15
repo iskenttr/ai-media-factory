@@ -1,0 +1,63 @@
+{
+  "task_id": "UPLOAD-IDEMPOTENCY-001",
+  "title": "Make upload finalization race-safe and idempotent",
+  "priority": "critical",
+  "objective": "Harden upload finalization so one verified upload can create exactly one analysis job even when finalization is retried or two requests race. Move the authoritative status read inside the SQLite write transaction, update only a pending upload, return the existing job for an already verified upload, reject failed or expired state without creating a job, and add deterministic regression tests. Preserve the HTTP contract, ownership checks, additive schema policy, source file cleanup behavior, and existing job/event semantics. Do not add destructive migrations or weaken upload verification.",
+  "enabled": false,
+  "allowed_paths": [
+    "app/api/uploads/[uploadId]/content/route.ts",
+    "app/api/uploads/[uploadId]/content/route.test.ts",
+    "lib/server/store.ts",
+    "lib/server/store.test.ts",
+    "lib/server/upload-verification.ts",
+    "lib/server/upload-verification.test.ts"
+  ],
+  "forbidden_paths": [
+    "production/**",
+    "deploy/**",
+    "secrets/**",
+    ".git/config",
+    "agent/policies/**",
+    "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
+    ".env*",
+    "storage/**"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 4,
+    "maximum_changed_files": 6,
+    "maximum_diff_lines": 1200,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 4,
+    "maximum_model_tokens": 180000,
+    "maximum_execution_ms": 1200000
+  },
+  "required_artifacts": [
+    "technical-summary.md",
+    "test-report.json",
+    "benchmark-report.json",
+    "quality-report.json",
+    "git-diff.patch"
+  ],
+  "test_commands": [
+    ["npm", "test", "--", "lib/server/store.test.ts", "lib/server/upload-verification.test.ts", "app/api/uploads/[uploadId]/content/route.test.ts"]
+  ],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": [
+      "app/api/uploads/[uploadId]/content/route.ts",
+      "lib/server/store.ts",
+      "lib/server/store.test.ts",
+      "lib/server/upload-verification.ts",
+      "lib/server/upload-verification.test.ts"
+    ],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

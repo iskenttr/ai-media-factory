@@ -1,31 +1,31 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 
 import type { TranslationProviderInput, TranslationProviderResult } from "@/lib/localization/contracts";
 import type { TranslationProvider } from "@/lib/providers/contracts/translation-provider";
+import { serverConfig } from "@/lib/server/config";
+
+import {
+  ProviderProcessError,
+  runBoundedProviderProcess,
+  type ProviderProcessOptions,
+} from "../provider-process";
 
 function fingerprint(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function run(command: string, input: unknown) {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
-    let output = "";
-    let error = "";
-    child.stdout.on("data", (chunk) => { output += String(chunk); });
-    child.stderr.on("data", (chunk) => { error += String(chunk); });
-    child.on("error", reject);
-    child.on("close", (code) => code === 0 ? resolve(output) : reject(new Error(error || `translation_provider_exit_${code}`)));
-    child.stdin.end(JSON.stringify(input));
-  });
 }
 
 export class ArgosTranslateProvider implements TranslationProvider {
   readonly id = "argos-translate";
   readonly version = "argos-translate-en-tr-v1";
 
-  constructor(private readonly command: string) {}
+  constructor(
+    private readonly command: string,
+    private readonly processOptions: ProviderProcessOptions = {
+      timeoutMs: serverConfig.argosProcessTimeoutMs,
+      killGraceMs: serverConfig.argosProcessKillGraceMs,
+      maxOutputBytes: serverConfig.argosProcessMaxOutputBytes,
+    },
+  ) {}
 
   async translate(input: TranslationProviderInput): Promise<TranslationProviderResult> {
     const inputFingerprint = fingerprint({
@@ -43,13 +43,19 @@ export class ArgosTranslateProvider implements TranslationProvider {
       };
     }
     try {
-      const output = JSON.parse(await run(this.command, {
+      const rawOutput = await runBoundedProviderProcess(this.command, [], {
         sourceText: input.sourceText,
         sourceLanguage: input.sourceLanguage.code,
         targetLanguage: input.targetLanguage.code,
         context: { previous: input.previousSegments.map((segment) => segment.text), next: input.nextSegments.map((segment) => segment.text) },
-      })) as { translatedText?: string; error?: string; version?: string };
-      if (!output.translatedText?.trim()) throw new Error(output.error || "empty_translation_result");
+      }, this.processOptions);
+      let output: { translatedText?: string; version?: string };
+      try {
+        output = JSON.parse(rawOutput) as { translatedText?: string; version?: string };
+      } catch {
+        throw new Error("translation_provider_invalid_response");
+      }
+      if (!output.translatedText?.trim()) throw new Error("translation_provider_invalid_response");
       return {
         availability: "available", translatedText: output.translatedText.trim(), providerVersion: output.version || this.version,
         sourceSegmentId: input.segmentId, targetLanguage: input.targetLanguage, translationNotes: [], timingAssessment: null,
@@ -59,7 +65,11 @@ export class ArgosTranslateProvider implements TranslationProvider {
       return {
         availability: "unavailable", translatedText: null, providerVersion: this.version,
         sourceSegmentId: input.segmentId, targetLanguage: input.targetLanguage, translationNotes: [], timingAssessment: null,
-        failureReason: error instanceof Error ? error.message : "provider_failure",
+        failureReason: error instanceof ProviderProcessError
+          ? error.code
+          : error instanceof Error && error.message === "translation_provider_invalid_response"
+            ? error.message
+            : "translation_provider_failed",
         provenance: { contextSnapshotId: input.contextSnapshotId, inputFingerprint, resultFingerprint: fingerprint("provider_failure") },
       };
     }

@@ -1,0 +1,11 @@
+/opt/ai-media-factory-dev/logs/*/*.log /opt/ai-media-factory-dev/logs/*/commands/*.log {
+    daily
+    rotate 14
+    size 10M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su amf-agent amf-agent
+}

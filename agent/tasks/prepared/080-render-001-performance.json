@@ -1,0 +1,32 @@
+{
+  "task_id": "RENDER-001",
+  "title": "Add render performance measurements",
+  "priority": "medium",
+  "objective": "Measure FFmpeg render duration, throughput, output size, sampling time, and retry cost in structured reports without changing render acceptance behavior.",
+  "enabled": false,
+  "allowed_paths": ["agent/evaluators/**", "lib/server/video-renderer.ts", "lib/server/video-renderer.test.ts"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 4,
+    "maximum_changed_files": 8,
+    "maximum_diff_lines": 1000,
+    "maximum_render_attempts": 3,
+    "maximum_model_calls": 4,
+    "maximum_execution_ms": 1800000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "agent", "lib/server/video-renderer.test.ts"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["agent/evaluators/render-analysis-agent.ts", "lib/server/video-renderer.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "failed-vertical-v1",
+  "goldenApproval": "pending",
+  "mediaRootEnvironmentVariable": "AMF_BENCHMARK_MEDIA_ROOT",
+  "sourceVideo": {
+    "relativePath": "failed-vertical-v1/source.webm",
+    "sha256": "c0f6a7ac3d11c81813085867979c98a9ae3a75100b5b204e494e64710a7defde",
+    "width": 1080,
+    "height": 1920,
+    "durationMs": 82507
+  },
+  "localizedSegments": {
+    "relativePath": "failed-vertical-v1/segments.final.json",
+    "sha256": "8b709abb4dc373a7664579355b267e3ebe163c68ccbca323660466e686ab56bf",
+    "segmentCount": 24,
+    "language": "tr"
+  },
+  "provenance": {
+    "classification": "sanitized-development-fixture",
+    "sourceTextReconstructedFromBurnedCaptions": false,
+    "productionIdentifiersIncluded": false,
+    "humanGoldenApproval": "required"
+  }
+}

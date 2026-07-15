@@ -15,7 +15,7 @@ import type { SpeechObservation } from "@/lib/analysis/observations";
 import { alignSegmentToSpeakers } from "@/lib/subtitle-quality/alignment";
 import { suggestionConfidenceSchema, suggestionStatusSchema, suggestionTypeSchema, targetLanguageSchema, transcriptPatchSchema, type StudioSuggestion, type TargetLanguage, type TranscriptPatch } from "@/lib/studio/contracts";
 import { deriveStudioSuggestions } from "@/lib/studio/suggestions";
-import { translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
+import { translationProviderResultSchema, translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
 
 import { serverConfig } from "./config";
 
@@ -127,7 +127,7 @@ interface VerifyUploadInput {
 }
 
 type DatabaseRow = Record<string, SQLInputValue>;
-const currentVideoRendererVersion = "subtitle-quality-v1";
+const currentVideoRendererVersion = "subtitle-quality-v2";
 
 function mapUpload(row: DatabaseRow): UploadSessionRecord {
   return {
@@ -498,31 +498,41 @@ export class AnalysisStore {
 
   failUpload(uploadId: string, errorCode: string) {
     this.database
-      .prepare("UPDATE upload_sessions SET status = 'failed', error_code = ? WHERE id = ?")
+      .prepare("UPDATE upload_sessions SET status = 'failed', error_code = ? WHERE id = ? AND status = 'pending'")
       .run(errorCode, uploadId);
   }
 
   verifyUploadAndCreateJob(input: VerifyUploadInput) {
-    const upload = this.getUploadSession(input.uploadId);
-    if (!upload) {
-      throw new Error("Upload session not found");
-    }
-
-    if (upload.status === "verified" && upload.jobId) {
-      return upload.jobId;
-    }
-
-    const jobId = randomUUID();
-    const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
 
     try {
-      this.database
+      const row = this.database
+        .prepare("SELECT * FROM upload_sessions WHERE id = ?")
+        .get(input.uploadId) as DatabaseRow | undefined;
+      if (!row) {
+        throw new Error("Upload session not found");
+      }
+
+      const upload = mapUpload(row);
+      if (upload.status === "verified") {
+        if (!upload.jobId) {
+          throw new Error("Verified upload is missing its analysis job");
+        }
+        this.database.exec("COMMIT");
+        return upload.jobId;
+      }
+      if (upload.status !== "pending") {
+        throw new Error("Upload session is not pending");
+      }
+
+      const jobId = randomUUID();
+      const now = new Date().toISOString();
+      const updated = this.database
         .prepare(`
           UPDATE upload_sessions
           SET status = 'verified', source_path = ?, actual_size = ?, sha256 = ?,
               verified_mime = ?, job_id = ?, error_code = NULL
-          WHERE id = ? AND status = 'pending'
+          WHERE id = ? AND status = 'pending' AND job_id IS NULL
         `)
         .run(
           input.sourcePath,
@@ -532,6 +542,9 @@ export class AnalysisStore {
           jobId,
           input.uploadId,
         );
+      if (updated.changes !== 1) {
+        throw new Error("Upload session verification lost its pending state");
+      }
 
       this.database
         .prepare(`
@@ -700,25 +713,39 @@ export class AnalysisStore {
   }
 
   listEvents(jobId: string, afterEventId?: string | null, attempt?: number) {
-    let afterSequence = 0;
-    if (afterEventId) {
-      const row = this.database
-        .prepare("SELECT sequence FROM analysis_events WHERE event_id = ? AND job_id = ?")
-        .get(afterEventId, jobId) as DatabaseRow | undefined;
-      afterSequence = row ? Number(row.sequence) : 0;
-    }
+    const afterSequence = afterEventId ? this.analysisEventSequence(jobId, afterEventId) : 0;
+    const rows = attempt
+      ? (this.database.prepare(`
+          SELECT * FROM analysis_events
+          WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC
+        `).all(jobId, attempt, afterSequence) as DatabaseRow[])
+      : (this.database.prepare(`
+          SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC
+        `).all(jobId, afterSequence) as DatabaseRow[]);
+    return rows.map((row) => this.mapEvent(row));
+  }
+
+  analysisEventSequence(jobId: string, eventId: string) {
+    const row = this.database
+      .prepare("SELECT sequence FROM analysis_events WHERE event_id = ? AND job_id = ?")
+      .get(eventId, jobId) as DatabaseRow | undefined;
+    return row ? Number(row.sequence) : 0;
+  }
+
+  listEventsAfterSequence(jobId: string, afterSequence: number, attempt?: number, limit = 100) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.trunc(limit)));
 
     const rows = attempt
       ? (this.database
           .prepare(
-            "SELECT * FROM analysis_events WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC",
+            "SELECT * FROM analysis_events WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?",
           )
-          .all(jobId, attempt, afterSequence) as DatabaseRow[])
+          .all(jobId, attempt, afterSequence, boundedLimit) as DatabaseRow[])
       : (this.database
           .prepare(
-            "SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC",
+            "SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?",
           )
-          .all(jobId, afterSequence) as DatabaseRow[]);
+          .all(jobId, afterSequence, boundedLimit) as DatabaseRow[]);
     return rows.map((row) => this.mapEvent(row));
   }
 
@@ -1112,44 +1139,111 @@ export class AnalysisStore {
   }
 
   listLocalizationEvents(runId: string, afterEventId?: string | null) {
-    const after = afterEventId
-      ? Number((this.database.prepare(`SELECT sequence FROM localization_events WHERE event_id = ? AND run_id = ?`).get(afterEventId, runId) as DatabaseRow | undefined)?.sequence ?? 0)
-      : 0;
-    return (this.database.prepare(`SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC`).all(runId, after) as DatabaseRow[])
+    const afterSequence = afterEventId ? this.localizationEventSequence(runId, afterEventId) : 0;
+    return (this.database.prepare(`
+      SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC
+    `).all(runId, afterSequence) as DatabaseRow[]).map((row) => this.mapLocalizationEvent(row));
+  }
+
+  localizationEventSequence(runId: string, eventId: string) {
+    const row = this.database.prepare(`SELECT sequence FROM localization_events WHERE event_id = ? AND run_id = ?`)
+      .get(eventId, runId) as DatabaseRow | undefined;
+    return row ? Number(row.sequence) : 0;
+  }
+
+  listLocalizationEventsAfterSequence(runId: string, afterSequence: number, limit = 100) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.trunc(limit)));
+    return (this.database.prepare(`
+      SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?
+    `).all(runId, afterSequence, boundedLimit) as DatabaseRow[])
       .map((row) => this.mapLocalizationEvent(row));
   }
 
-  saveTranslationProviderResult(runId: string, result: TranslationProviderResult) {
-    const localized = this.database.prepare(`
-      SELECT ls.id FROM localized_segments ls JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
-      WHERE lt.run_id = ? AND ls.source_segment_id = ?
-    `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
-    if (!localized) throw new Error("localized_segment_not_found");
-    const now = new Date().toISOString();
-    const existing = this.database.prepare(`SELECT id FROM translation_provider_results WHERE run_id = ? AND source_segment_id = ?`)
-      .get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
-    if (existing) {
+  saveTranslationProviderResult(runId: string, workerId: string, result: TranslationProviderResult) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const lease = this.database.prepare(`
+        SELECT id FROM localization_runs
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
+      `).get(runId, workerId) as DatabaseRow | undefined;
+      if (!lease) {
+        this.database.exec("COMMIT");
+        return null;
+      }
+      const localized = this.database.prepare(`
+        SELECT ls.id FROM localized_segments ls JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+        WHERE lt.run_id = ? AND ls.source_segment_id = ?
+      `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
+      if (!localized) throw new Error("localized_segment_not_found");
+
+      const now = new Date().toISOString();
+      const existing = this.database.prepare(`
+        SELECT id, result_json FROM translation_provider_results WHERE run_id = ? AND source_segment_id = ?
+      `).get(runId, result.sourceSegmentId) as DatabaseRow | undefined;
+      const providerResultId = existing ? String(existing.id) : randomUUID();
+      const authoritativeResult = existing
+        ? translationProviderResultSchema.parse(JSON.parse(String(existing.result_json)))
+        : result;
+      if (!existing) {
+        this.database.prepare(`
+          INSERT INTO translation_provider_results (id, run_id, source_segment_id, availability, result_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(providerResultId, runId, result.sourceSegmentId, result.availability, JSON.stringify(result), now);
+      }
+
+      const active = this.database.prepare(`
+        SELECT tr.origin FROM localized_segments ls
+        LEFT JOIN translation_revisions tr ON tr.id = ls.active_revision_id
+        WHERE ls.id = ?
+      `).get(String(localized.id)) as DatabaseRow;
+      const preservesUserRevision = active.origin === "user";
+      if (authoritativeResult.availability === "available" && authoritativeResult.translatedText && authoritativeResult.timingAssessment) {
+        let providerRevision = this.database.prepare(`
+          SELECT id, version FROM translation_revisions WHERE provider_result_id = ?
+        `).get(providerResultId) as DatabaseRow | undefined;
+        if (!providerRevision) {
+          const version = Number((this.database.prepare(`
+            SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?
+          `).get(String(localized.id)) as DatabaseRow).version) + 1;
+          const revisionId = randomUUID();
+          this.database.prepare(`
+            INSERT INTO translation_revisions (
+              id, localized_segment_id, version, translated_text, origin, provider_result_id, created_at
+            ) VALUES (?, ?, ?, ?, 'provider', ?, ?)
+          `).run(revisionId, String(localized.id), version, authoritativeResult.translatedText, providerResultId, now);
+          providerRevision = { id: revisionId, version };
+        }
+        if (!preservesUserRevision) {
+          this.database.prepare(`
+            UPDATE localized_segments
+            SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ?
+            WHERE id = ?
+          `).run(
+            String(providerRevision.id),
+            JSON.stringify(authoritativeResult.timingAssessment),
+            now,
+            String(localized.id),
+          );
+        }
+      } else if (!preservesUserRevision) {
+        this.database.prepare(`
+          UPDATE localized_segments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?
+        `).run(authoritativeResult.failureReason ?? "translation_unavailable", now, String(localized.id));
+      }
+
       const current = this.database.prepare(`
         SELECT ls.status, tr.version FROM localized_segments ls
         LEFT JOIN translation_revisions tr ON tr.id = ls.active_revision_id WHERE ls.id = ?
       `).get(String(localized.id)) as DatabaseRow;
-      return { status: String(current.status) as "translated" | "failed", revision: current.version === null ? null : Number(current.version) };
+      this.database.exec("COMMIT");
+      return {
+        status: String(current.status) as "translated" | "failed",
+        revision: current.version === null ? null : Number(current.version),
+      };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
     }
-    const providerResultId = randomUUID();
-    this.database.prepare(`INSERT INTO translation_provider_results (id, run_id, source_segment_id, availability, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(providerResultId, runId, result.sourceSegmentId, result.availability, JSON.stringify(result), now);
-    if (result.availability === "available" && result.translatedText && result.timingAssessment) {
-      const version = Number((this.database.prepare(`SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?`).get(String(localized.id)) as DatabaseRow).version) + 1;
-      const revisionId = randomUUID();
-      this.database.prepare(`INSERT INTO translation_revisions (id, localized_segment_id, version, translated_text, origin, provider_result_id, created_at) VALUES (?, ?, ?, ?, 'provider', ?, ?)`)
-        .run(revisionId, String(localized.id), version, result.translatedText, providerResultId, now);
-      this.database.prepare(`UPDATE localized_segments SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ? WHERE id = ?`)
-        .run(revisionId, JSON.stringify(result.timingAssessment), now, String(localized.id));
-      return { status: "translated" as const, revision: version };
-    }
-    this.database.prepare(`UPDATE localized_segments SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?`)
-      .run(result.failureReason ?? "translation_unavailable", now, String(localized.id));
-    return { status: "failed" as const, revision: null };
   }
 
   saveLocalizedSegmentUserRevision(runId: string, sourceSegmentId: string, ownerHash: string, translatedText: string) {
@@ -1208,23 +1302,47 @@ export class AnalysisStore {
   }
 
   queueTranslationRegeneration(runId: string, sourceSegmentId: string, ownerHash: string) {
-    const row = this.database.prepare(`
-      SELECT ls.id
-      FROM localized_segments ls
-      JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
-      JOIN localization_runs r ON r.id = lt.run_id
-      JOIN localization_projects p ON p.id = r.project_id
-      JOIN analysis_jobs j ON j.id = p.job_id
-      WHERE r.id = ? AND ls.source_segment_id = ? AND j.owner_hash = ?
-    `).get(runId, sourceSegmentId, ownerHash) as DatabaseRow | undefined;
-    if (!row) return null;
-    const now = new Date().toISOString();
-    const jobId = randomUUID();
-    this.database.prepare(`
-      INSERT INTO translation_regeneration_jobs (id, run_id, source_segment_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'queued', ?, ?)
-    `).run(jobId, runId, sourceSegmentId, now, now);
-    this.appendLocalizationEvent(runId, "translation_segment_regeneration_queued", { sourceSegmentId, jobId }, `${jobId}:queued`);
+    this.database.exec("BEGIN IMMEDIATE");
+    let jobId: string | null = null;
+    let created = false;
+    try {
+      const row = this.database.prepare(`
+        SELECT ls.id
+        FROM localized_segments ls
+        JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+        JOIN localization_runs r ON r.id = lt.run_id
+        JOIN localization_projects p ON p.id = r.project_id
+        JOIN analysis_jobs j ON j.id = p.job_id
+        WHERE r.id = ? AND ls.source_segment_id = ? AND j.owner_hash = ?
+      `).get(runId, sourceSegmentId, ownerHash) as DatabaseRow | undefined;
+      if (!row) {
+        this.database.exec("COMMIT");
+        return null;
+      }
+      const existing = this.database.prepare(`
+        SELECT id FROM translation_regeneration_jobs
+        WHERE run_id = ? AND source_segment_id = ? AND status IN ('queued', 'running')
+        ORDER BY created_at ASC, id ASC LIMIT 1
+      `).get(runId, sourceSegmentId) as DatabaseRow | undefined;
+      if (existing) {
+        jobId = String(existing.id);
+      } else {
+        const now = new Date().toISOString();
+        jobId = randomUUID();
+        this.database.prepare(`
+          INSERT INTO translation_regeneration_jobs (id, run_id, source_segment_id, status, created_at, updated_at)
+          VALUES (?, ?, ?, 'queued', ?, ?)
+        `).run(jobId, runId, sourceSegmentId, now, now);
+        created = true;
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    if (created) {
+      this.appendLocalizationEvent(runId, "translation_segment_regeneration_queued", { sourceSegmentId, jobId }, `${jobId}:queued`);
+    }
     return jobId;
   }
 
@@ -1258,75 +1376,96 @@ export class AnalysisStore {
     `).run(new Date(now.getTime() + leaseMs).toISOString(), now.toISOString(), jobId, workerId).changes === 1;
   }
 
-  saveTranslationRegenerationResult(jobId: string, result: TranslationProviderResult) {
-    const job = this.database.prepare(`SELECT * FROM translation_regeneration_jobs WHERE id = ?`).get(jobId) as DatabaseRow | undefined;
-    if (!job) throw new Error("translation_regeneration_job_not_found");
-    if (String(job.status) === "completed") return { status: "completed" as const };
-    const localized = this.database.prepare(`
-      SELECT ls.id, ls.active_revision_id, active.origin AS active_origin
-      FROM localized_segments ls
-      JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
-      LEFT JOIN translation_revisions active ON active.id = ls.active_revision_id
-      WHERE lt.run_id = ? AND ls.source_segment_id = ?
-    `).get(String(job.run_id), String(job.source_segment_id)) as DatabaseRow | undefined;
-    if (!localized) throw new Error("localized_segment_not_found");
-    const now = new Date().toISOString();
-    if (result.availability === "available" && result.translatedText && result.timingAssessment) {
-      const version = Number((this.database.prepare(`SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?`).get(String(localized.id)) as DatabaseRow).version) + 1;
-      const revisionId = randomUUID();
-      this.database.prepare(`
-        INSERT INTO translation_revisions (id, localized_segment_id, version, translated_text, origin, parent_revision_id, created_at)
-        VALUES (?, ?, ?, ?, 'provider', ?, ?)
-      `).run(revisionId, String(localized.id), version, result.translatedText, localized.active_revision_id ? String(localized.active_revision_id) : null, now);
-      const activeOrigin = localized.active_origin ? String(localized.active_origin) : null;
-      if (activeOrigin !== "user") {
-        this.database.prepare(`
-          UPDATE localized_segments SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ?
-          WHERE id = ?
-        `).run(revisionId, JSON.stringify(result.timingAssessment), now, String(localized.id));
+  saveTranslationRegenerationResult(jobId: string, workerId: string, result: TranslationProviderResult) {
+    this.database.exec("BEGIN IMMEDIATE");
+    let event: { runId: string; sourceSegmentId: string; type: "completed" | "failed"; revision?: number; activeRevisionPreserved?: boolean; reason?: string } | null = null;
+    try {
+      const job = this.database.prepare(`SELECT * FROM translation_regeneration_jobs WHERE id = ?`).get(jobId) as DatabaseRow | undefined;
+      if (!job) throw new Error("translation_regeneration_job_not_found");
+      if (String(job.status) === "completed") {
+        this.database.exec("COMMIT");
+        return { status: "completed" as const };
       }
+      if (String(job.status) !== "running" || String(job.lease_owner) !== workerId) {
+        this.database.exec("COMMIT");
+        return null;
+      }
+      const localized = this.database.prepare(`
+        SELECT ls.id, ls.active_revision_id, active.origin AS active_origin
+        FROM localized_segments ls
+        JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+        LEFT JOIN translation_revisions active ON active.id = ls.active_revision_id
+        WHERE lt.run_id = ? AND ls.source_segment_id = ?
+      `).get(String(job.run_id), String(job.source_segment_id)) as DatabaseRow | undefined;
+      if (!localized) throw new Error("localized_segment_not_found");
+      const now = new Date().toISOString();
+      if (result.availability === "available" && result.translatedText && result.timingAssessment) {
+        const version = Number((this.database.prepare(`SELECT COALESCE(MAX(version), 0) AS version FROM translation_revisions WHERE localized_segment_id = ?`).get(String(localized.id)) as DatabaseRow).version) + 1;
+        const revisionId = randomUUID();
+        this.database.prepare(`
+          INSERT INTO translation_revisions (id, localized_segment_id, version, translated_text, origin, parent_revision_id, created_at)
+          VALUES (?, ?, ?, ?, 'provider', ?, ?)
+        `).run(revisionId, String(localized.id), version, result.translatedText, localized.active_revision_id ? String(localized.active_revision_id) : null, now);
+        const activeOrigin = localized.active_origin ? String(localized.active_origin) : null;
+        if (activeOrigin !== "user") {
+          this.database.prepare(`
+            UPDATE localized_segments SET status = 'translated', active_revision_id = ?, timing_json = ?, failure_reason = NULL, updated_at = ?
+            WHERE id = ?
+          `).run(revisionId, JSON.stringify(result.timingAssessment), now, String(localized.id));
+        }
+        this.database.prepare(`
+          UPDATE translation_regeneration_jobs
+          SET status = 'completed', result_json = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE id = ? AND status = 'running' AND lease_owner = ?
+        `).run(JSON.stringify(result), now, jobId, workerId);
+        event = { runId: String(job.run_id), sourceSegmentId: String(job.source_segment_id), type: "completed", revision: version, activeRevisionPreserved: activeOrigin === "user" };
+        this.database.exec("COMMIT");
+        this.appendLocalizationEvent(event.runId, "translation_segment_regenerated", {
+          sourceSegmentId: event.sourceSegmentId, jobId, revision: version, activeRevisionPreserved: event.activeRevisionPreserved,
+        }, `${jobId}:completed`);
+        return { status: "completed" as const, revision: version, activeRevisionPreserved: event.activeRevisionPreserved };
+      }
+      const reason = result.failureReason ?? "translation_unavailable";
       this.database.prepare(`
         UPDATE translation_regeneration_jobs
-        SET status = 'completed', result_json = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?
-      `).run(JSON.stringify(result), now, jobId);
-      this.appendLocalizationEvent(String(job.run_id), "translation_segment_regenerated", {
-        sourceSegmentId: String(job.source_segment_id),
-        jobId,
-        revision: version,
-        activeRevisionPreserved: activeOrigin === "user",
-      }, `${jobId}:completed`);
-      return { status: "completed" as const, revision: version, activeRevisionPreserved: activeOrigin === "user" };
+        SET status = 'failed', result_json = ?, last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
+      `).run(JSON.stringify(result), reason, now, jobId, workerId);
+      event = { runId: String(job.run_id), sourceSegmentId: String(job.source_segment_id), type: "failed", reason };
+      this.database.exec("COMMIT");
+      this.appendLocalizationEvent(event.runId, "translation_segment_regeneration_failed", {
+        sourceSegmentId: event.sourceSegmentId, jobId, reason,
+      }, `${jobId}:failed`);
+      return { status: "failed" as const };
+    } catch (error) {
+      try {
+        this.database.exec("ROLLBACK");
+      } catch {
+        // The durable job transition may already be committed before event publication.
+      }
+      throw error;
     }
-    this.database.prepare(`
-      UPDATE translation_regeneration_jobs
-      SET status = 'failed', result_json = ?, last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-      WHERE id = ?
-    `).run(JSON.stringify(result), result.failureReason ?? "translation_unavailable", now, jobId);
-    this.appendLocalizationEvent(String(job.run_id), "translation_segment_regeneration_failed", {
-      sourceSegmentId: String(job.source_segment_id),
-      jobId,
-      reason: result.failureReason ?? "translation_unavailable",
-    }, `${jobId}:failed`);
-    return { status: "failed" as const };
   }
 
-  failTranslationRegenerationJob(jobId: string, errorCode: string) {
-    const job = this.database.prepare(`SELECT run_id, source_segment_id FROM translation_regeneration_jobs WHERE id = ?`).get(jobId) as DatabaseRow | undefined;
+  failTranslationRegenerationJob(jobId: string, workerId: string, errorCode: string) {
+    const job = this.database.prepare(`SELECT run_id, source_segment_id FROM translation_regeneration_jobs WHERE id = ? AND status = 'running' AND lease_owner = ?`).get(jobId, workerId) as DatabaseRow | undefined;
+    if (!job) return false;
     const now = new Date().toISOString();
-    this.database.prepare(`
+    const result = this.database.prepare(`
       UPDATE translation_regeneration_jobs
       SET status = 'failed', last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-      WHERE id = ?
-    `).run(errorCode, now, jobId);
-    if (job) this.appendLocalizationEvent(String(job.run_id), "translation_segment_regeneration_failed", {
+      WHERE id = ? AND status = 'running' AND lease_owner = ?
+    `).run(errorCode, now, jobId, workerId);
+    if (result.changes !== 1) return false;
+    this.appendLocalizationEvent(String(job.run_id), "translation_segment_regeneration_failed", {
       sourceSegmentId: String(job.source_segment_id), jobId, reason: errorCode,
     }, `${jobId}:failed`);
+    return true;
   }
 
-  finishLocalizationRun(runId: string, status: "completed" | "partial" | "failed", errorCode?: string) {
-    this.database.prepare(`UPDATE localization_runs SET status = ?, last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?`)
-      .run(status, errorCode ?? null, new Date().toISOString(), runId);
+  finishLocalizationRun(runId: string, workerId: string, status: "completed" | "partial" | "failed", errorCode?: string) {
+    return this.database.prepare(`UPDATE localization_runs SET status = ?, last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?`)
+      .run(status, errorCode ?? null, new Date().toISOString(), runId, workerId).changes === 1;
   }
 
   getLatestLocalizationForProject(projectId: string): LocalizationRunData | null {
@@ -1340,6 +1479,15 @@ export class AnalysisStore {
       JOIN analysis_jobs j ON j.id = p.job_id WHERE r.id = ? AND j.owner_hash = ?
     `).get(runId, ownerHash) as DatabaseRow | undefined;
     return row ? this.getLocalizationRunData(runId) : null;
+  }
+
+  localizationRunBelongsToOwner(runId: string, ownerHash: string) {
+    return Boolean(this.database.prepare(`
+      SELECT 1 FROM localization_runs r
+      JOIN localization_projects p ON p.id = r.project_id
+      JOIN analysis_jobs j ON j.id = p.job_id
+      WHERE r.id = ? AND j.owner_hash = ?
+    `).get(runId, ownerHash));
   }
 
   queueVideoRender(runId: string, ownerHash: string) {
@@ -1410,14 +1558,27 @@ export class AnalysisStore {
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
 
+  renewVideoRenderLease(renderId: string, workerId: string, leaseMs: number) {
+    const now = new Date();
+    return this.database.prepare(`
+      UPDATE video_render_jobs SET lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'running' AND lease_owner = ?
+    `).run(
+      new Date(now.getTime() + leaseMs).toISOString(),
+      now.toISOString(),
+      renderId,
+      workerId,
+    ).changes === 1;
+  }
+
   finishVideoRender(renderId: string, workerId: string) {
-    return this.database.prepare(`UPDATE video_render_jobs SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL, updated_at = ? WHERE id = ? AND lease_owner = ?`)
+    return this.database.prepare(`UPDATE video_render_jobs SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?`)
       .run(new Date().toISOString(), renderId, workerId).changes === 1;
   }
 
   failVideoRender(renderId: string, workerId: string, errorCode: string) {
-    this.database.prepare(`UPDATE video_render_jobs SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = ? WHERE id = ? AND lease_owner = ?`)
-      .run(errorCode, new Date().toISOString(), renderId, workerId);
+    return this.database.prepare(`UPDATE video_render_jobs SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?`)
+      .run(errorCode, new Date().toISOString(), renderId, workerId).changes === 1;
   }
 
   getVideoRenderForOwner(renderId: string, ownerHash: string) {
@@ -1461,28 +1622,34 @@ export class AnalysisStore {
     return row ? localizationPlanSchema.parse(JSON.parse(String(row.plan_json))) : null;
   }
 
-  completeJob(jobId: string, readiness: "ready" | "limited" | "blocked") {
+  completeJob(
+    jobId: string,
+    workerId: string,
+    readiness: "ready" | "limited" | "blocked",
+  ) {
     const now = new Date().toISOString();
-    this.database
+    const result = this.database
       .prepare(`
         UPDATE analysis_jobs
         SET status = 'completed', readiness = ?, lease_owner = NULL,
             lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
       `)
-      .run(readiness, now, jobId);
+      .run(readiness, now, jobId, workerId);
+    return result.changes === 1;
   }
 
-  failJob(jobId: string, errorCode: string) {
+  failJob(jobId: string, workerId: string, errorCode: string) {
     const now = new Date().toISOString();
-    this.database
+    const result = this.database
       .prepare(`
         UPDATE analysis_jobs
         SET status = 'failed', last_error_code = ?, lease_owner = NULL,
             lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
       `)
-      .run(errorCode, now, jobId);
+      .run(errorCode, now, jobId, workerId);
+    return result.changes === 1;
   }
 
   retryJob(jobId: string, ownerHash: string) {

@@ -1,0 +1,51 @@
+{
+  "task_id": "MIGRATION-SMOKE-001",
+  "title": "Validate the isolated autonomous agent lifecycle",
+  "priority": "high",
+  "objective": "Create one harmless development-only sample file, run an existing deterministic test, render the synthetic smoke artifact, and prove reporting without touching product or production code.",
+  "enabled": true,
+  "allowed_paths": [
+    "benchmarks/results/**"
+  ],
+  "forbidden_paths": [
+    "production/**",
+    "deploy/**",
+    "secrets/**",
+    ".git/config",
+    "agent/policies/**",
+    "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
+    ".env*",
+    "storage/**"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": false,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 1,
+    "maximum_changed_files": 1,
+    "maximum_diff_lines": 20,
+    "maximum_render_attempts": 1,
+    "maximum_model_calls": 0,
+    "maximum_execution_ms": 300000
+  },
+  "required_artifacts": [
+    "technical-summary.md",
+    "test-report.json",
+    "benchmark-report.json",
+    "quality-report.json",
+    "git-diff.patch"
+  ],
+  "test_commands": [
+    ["npm", "test", "--", "lib/subtitle-quality/validation.test.ts"]
+  ],
+  "execution": {
+    "kind": "controlled_sample",
+    "target": "benchmarks/results/migration-smoke.txt",
+    "content": "AI Media Factory autonomous agent migration smoke validation.\n"
+  }
+}

@@ -10,6 +10,7 @@ describe("analysis worker without an external model", () => {
   let directory: string | undefined;
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (directory) {
       await rm(directory, { recursive: true, force: true });
     }
@@ -17,6 +18,7 @@ describe("analysis worker without an external model", () => {
     delete process.env.AMF_DATABASE_PATH;
     delete process.env.WHISPER_CPP_BIN;
     delete process.env.WHISPER_MODEL_PATH;
+    vi.doUnmock("./media");
     vi.resetModules();
   });
 
@@ -121,4 +123,163 @@ describe("analysis worker without an external model", () => {
     });
     store.close();
   }, 20_000);
+
+  it("does not write a terminal failure after lease renewal reports ownership loss", async () => {
+    vi.useFakeTimers();
+    let rejectProbe: (reason: Error) => void = () => undefined;
+    const probe = new Promise<never>((_resolve, reject) => {
+      rejectProbe = reject;
+    });
+    vi.doMock("./media", () => ({
+      assessAudioSignal: vi.fn(),
+      extractAnalysisAudio: vi.fn(),
+      probeMedia: vi.fn(() => probe),
+      removeWorkDirectory: vi.fn(async () => undefined),
+    }));
+    vi.resetModules();
+
+    const appendEvent = vi.fn((
+      jobId: string,
+      attempt: number,
+      type: string,
+      payload: unknown,
+    ) => ({
+      schemaVersion: 1,
+      eventId: `${jobId}:${type}`,
+      jobId,
+      uploadId: "upload-1",
+      attempt,
+      sequence: 1,
+      type,
+      occurredAt: new Date().toISOString(),
+      payload,
+    }));
+    const renewLease = vi.fn(() => false);
+    const failJob = vi.fn(() => false);
+    const fakeStore = {
+      claimNextJob: vi.fn(() => ({
+        id: "job-1",
+        uploadId: "upload-1",
+        ownerHash: "owner-hash",
+        status: "running",
+        attempt: 1,
+        readiness: null,
+        sourcePath: "/tmp/source.mp4",
+        fileName: "source.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 1024,
+        sha256: "a".repeat(64),
+      })),
+      appendEvent,
+      renewLease,
+      failJob,
+    };
+    const { runWorkerOnce } = await import("./analysis-worker");
+    const running = runWorkerOnce(fakeStore as unknown as import("./store").AnalysisStore, "stale-worker");
+
+    await vi.advanceTimersByTimeAsync(100_001);
+    expect(renewLease).toHaveBeenCalledWith("job-1", "stale-worker", 300_000);
+    rejectProbe(new Error("probe_failed_after_reclaim"));
+    await running;
+
+    expect(failJob).not.toHaveBeenCalled();
+    expect(appendEvent.mock.calls.map((call) => call[2])).toEqual(["upload_received"]);
+  });
+
+  it("discards successful probe results after lease renewal reports ownership loss", async () => {
+    vi.useFakeTimers();
+    let resolveProbe: (metadata: {
+      durationMs: number;
+      width: number;
+      height: number;
+      audioPresent: boolean;
+      container: string;
+    }) => void = () => undefined;
+    const probe = new Promise<{
+      durationMs: number;
+      width: number;
+      height: number;
+      audioPresent: boolean;
+      container: string;
+    }>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const removeWorkDirectory = vi.fn(async () => undefined);
+    vi.doMock("./media", () => ({
+      assessAudioSignal: vi.fn(),
+      extractAnalysisAudio: vi.fn(),
+      probeMedia: vi.fn(() => probe),
+      removeWorkDirectory,
+    }));
+    vi.resetModules();
+
+    const appendEvent = vi.fn((
+      jobId: string,
+      attempt: number,
+      type: string,
+      payload: unknown,
+    ) => ({
+      schemaVersion: 1,
+      eventId: `${jobId}:${type}`,
+      jobId,
+      uploadId: "upload-1",
+      attempt,
+      sequence: 1,
+      type,
+      occurredAt: new Date().toISOString(),
+      payload,
+    }));
+    const renewLease = vi.fn(() => false);
+    const failJob = vi.fn(() => false);
+    const saveObservation = vi.fn();
+    const saveSourceTranscript = vi.fn();
+    const saveLocalizationPlan = vi.fn();
+    const completeJob = vi.fn();
+    const fakeStore = {
+      claimNextJob: vi.fn(() => ({
+        id: "job-1",
+        uploadId: "upload-1",
+        ownerHash: "owner-hash",
+        status: "running",
+        attempt: 1,
+        readiness: null,
+        sourcePath: "/tmp/source.mp4",
+        fileName: "source.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 1024,
+        sha256: "a".repeat(64),
+      })),
+      appendEvent,
+      renewLease,
+      failJob,
+      saveObservation,
+      saveSourceTranscript,
+      saveLocalizationPlan,
+      completeJob,
+    };
+    const { runWorkerOnce } = await import("./analysis-worker");
+    const running = runWorkerOnce(fakeStore as unknown as import("./store").AnalysisStore, "stale-worker");
+
+    await vi.advanceTimersByTimeAsync(100_001);
+    resolveProbe({
+      durationMs: 1_000,
+      width: 640,
+      height: 360,
+      audioPresent: false,
+      container: "mp4",
+    });
+    await running;
+
+    expect(renewLease).toHaveBeenCalledWith("job-1", "stale-worker", 300_000);
+    expect(appendEvent.mock.calls.map((call) => call[2])).toEqual(["upload_received"]);
+    expect(saveObservation).not.toHaveBeenCalled();
+    expect(saveSourceTranscript).not.toHaveBeenCalled();
+    expect(saveLocalizationPlan).not.toHaveBeenCalled();
+    expect(completeJob).not.toHaveBeenCalled();
+    expect(failJob).not.toHaveBeenCalled();
+    expect(removeWorkDirectory).toHaveBeenCalledOnce();
+    expect(removeWorkDirectory).toHaveBeenCalledWith(expect.stringMatching(
+      /[/\\]work[/\\]job-1-1[/\\][0-9a-f-]{36}$/,
+    ));
+  });
 });
