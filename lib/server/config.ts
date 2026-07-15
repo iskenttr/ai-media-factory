@@ -2,6 +2,11 @@ import path from "node:path";
 
 const projectRoot = process.cwd();
 
+function positiveNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const serverConfig = {
   storageRoot: process.env.AMF_STORAGE_DIR ?? path.join(projectRoot, "storage"),
   databasePath:
@@ -12,6 +17,11 @@ export const serverConfig = {
   workerPollMs: 500,
   ssePollMs: 350,
   sseHeartbeatMs: 15_000,
+  mediaProbeTimeoutMs: positiveNumber(process.env.AMF_MEDIA_PROBE_TIMEOUT_MS, 30_000),
+  mediaFfmpegTimeoutMs: positiveNumber(process.env.AMF_MEDIA_FFMPEG_TIMEOUT_MS, 30 * 60_000),
+  mediaFrameTimeoutMs: positiveNumber(process.env.AMF_MEDIA_FRAME_TIMEOUT_MS, 2 * 60_000),
+  mediaProcessKillGraceMs: positiveNumber(process.env.AMF_MEDIA_PROCESS_KILL_GRACE_MS, 2_000),
+  mediaProcessMaxOutputBytes: positiveNumber(process.env.AMF_MEDIA_PROCESS_MAX_OUTPUT_BYTES, 4 * 1024 * 1024),
   whisperCppBinary: process.env.WHISPER_CPP_BIN,
   whisperModelPath: process.env.WHISPER_MODEL_PATH,
   pyannotePython: process.env.PYANNOTE_PYTHON,
