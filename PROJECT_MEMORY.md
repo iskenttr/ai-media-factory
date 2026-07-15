@@ -20,6 +20,9 @@
 - Still forbidden: automatic merge, protected-branch writes, production deployment/access, secret access, IAM/billing/network mutation, destructive cleanup, and unbounded model spend.
 - Level 2 runtime proof: `MIGRATION-SMOKE-001` was accepted at score 97 with 0 critical errors and automatically pushed commit `8016c7e126838bd961be95f4bd7cfbfa5bc33e37` without force. Draft PR: `https://github.com/iskenttr/ai-media-factory/pull/7`.
 - Accepted technical-debt report: commit `9d6b65730300fc37f8523a834322e84453676724`; draft PR: `https://github.com/iskenttr/ai-media-factory/pull/6`.
+- On 2026-07-15 the user authorized **Autonomous Engineering Mode** for the higher-level CTO/Codex workflow on `codex/agent-v2`: build and prioritize its own backlog, require focused tests plus lint, typecheck, full tests, and build, abandon or revert failed feature branches, and automatically merge independently reviewed safe PRs into `codex/agent-v2`. Risky PRs still require human approval. The sandboxed GCE agent itself remains Level 2 and cannot merge.
+- Permanent boundaries remain unchanged: never write to `main`, never access or mutate production, never force-push, never expose secrets, and never change IAM, billing, or networking autonomously.
+- Prioritized work and merge-risk classifications are recorded in `docs/AUTONOMOUS_BACKLOG.md`.
 
 ## Project Skill
 
