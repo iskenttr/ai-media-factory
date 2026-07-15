@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AnalysisStore } from "./store";
 
@@ -18,6 +18,7 @@ describe("AnalysisStore", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     store.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -195,6 +196,52 @@ describe("AnalysisStore", () => {
     });
   });
 
+  function createReadyVideoRender() {
+    const jobId = createJob();
+    const languageEvent = store.appendEvent(jobId, 1, "language_detected", {
+      availability: "available", language: { code: "en", name: "English" },
+    }, `${jobId}:1:language_detected`);
+    const transcriptId = store.saveSourceTranscript({
+      jobId,
+      attempt: 1,
+      sourceEventId: languageEvent.eventId,
+      speech: {
+        transcript: "Hello",
+        segments: [{ startSeconds: 0, endSeconds: 2, text: "Hello" }],
+        language: { code: "en", name: "English" },
+        providerId: "test-provider",
+        providerVersion: "1",
+      },
+    });
+    const projectId = store.ensureLocalizationProject(jobId, transcriptId);
+    store.completeJob(jobId, "ready");
+    store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
+    store.prepareLocalizationSetup(projectId);
+    const runId = store.createLocalizationRun(projectId);
+    const sourceSegmentId = store.getStudioProjectForOwner(jobId, "owner-hash")!.segments[0].id;
+    store.saveTranslationProviderResult(runId, {
+      availability: "available",
+      translatedText: "Merhaba",
+      providerVersion: "test-provider-v1",
+      sourceSegmentId,
+      targetLanguage: { code: "tr", name: "Turkish" },
+      translationNotes: [],
+      timingAssessment: {
+        originalDurationMs: 2000,
+        translatedCharacterCount: 7,
+        translatedWordCount: 1,
+        estimatedSpeakingDurationMs: 430,
+        status: "fits",
+        methodVersion: "test",
+        reason: "Fits",
+      },
+      failureReason: null,
+      provenance: { contextSnapshotId: "snapshot", inputFingerprint: "input", resultFingerprint: "result" },
+    });
+    store.finishLocalizationRun(runId, "completed");
+    return store.queueVideoRender(runId, "owner-hash")!;
+  }
+
   it("persists ordered events idempotently", () => {
     const jobId = createJob();
     const first = store.appendEvent(
@@ -257,6 +304,42 @@ describe("AnalysisStore", () => {
       id: jobId,
       status: "running",
     });
+  });
+
+  it("renews and completes a video render only for its lease owner", () => {
+    const renderId = createReadyVideoRender();
+    expect(store.claimNextVideoRender("render-worker-1", 30_000)).toMatchObject({ id: renderId });
+    expect(store.renewVideoRenderLease(renderId, "render-worker-1", 30_000)).toBe(true);
+    expect(store.finishVideoRender(renderId, "render-worker-2")).toBe(false);
+    expect(store.finishVideoRender(renderId, "render-worker-1")).toBe(true);
+    expect(store.renewVideoRenderLease(renderId, "render-worker-1", 30_000)).toBe(false);
+    expect(store.getVideoRenderForOwner(renderId, "owner-hash")).toMatchObject({ status: "completed" });
+  });
+
+  it("fails a video render only for its lease owner", () => {
+    const renderId = createReadyVideoRender();
+    expect(store.claimNextVideoRender("render-worker-1", 30_000)).toMatchObject({ id: renderId });
+    expect(store.failVideoRender(renderId, "render-worker-2", "foreign_failure")).toBe(false);
+    expect(store.failVideoRender(renderId, "render-worker-1", "render_failed")).toBe(true);
+    expect(store.finishVideoRender(renderId, "render-worker-1")).toBe(false);
+    expect(store.getVideoRenderForOwner(renderId, "owner-hash")).toMatchObject({ status: "failed", failureReason: "render_failed" });
+  });
+
+  it("rejects stale video render ownership after the lease is reclaimed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const renderId = createReadyVideoRender();
+    expect(store.claimNextVideoRender("stale-worker", 1)).toMatchObject({ id: renderId });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.002Z"));
+    expect(store.claimNextVideoRender("current-worker", 30_000)).toMatchObject({ id: renderId });
+    expect(store.renewVideoRenderLease(renderId, "stale-worker", 30_000)).toBe(false);
+    expect(store.finishVideoRender(renderId, "stale-worker")).toBe(false);
+    expect(store.failVideoRender(renderId, "stale-worker", "stale_failure")).toBe(false);
+    expect(store.finishVideoRender(renderId, "current-worker")).toBe(true);
+  });
+
+  it("returns no video render when the queue is empty", () => {
+    expect(store.claimNextVideoRender("render-worker", 30_000)).toBeNull();
   });
 
   it("keeps the source transcript immutable while applying versioned user corrections", () => {
