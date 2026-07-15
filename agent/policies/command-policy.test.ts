@@ -20,3 +20,47 @@ describe("command policy", () => {
   });
   it("rejects credentials in argv", () => expect(() => validateCommand(request(["node", "x.js", "token=abcdefghijklmnop"]), worktree, artifacts)).toThrow("secret_in_command_argv"));
 });
+
+describe("development mode (policy v2)", () => {
+  it("allows npm install, ci, update in development mode", () => {
+    const devRequest = () => ({ argv: [], cwd: worktree, taskId: "DEV-001" });
+    expect(validateCommand({ ...devRequest(), argv: ["npm", "install"] }, worktree, artifacts, true).executable).toBe("npm");
+    expect(validateCommand({ ...devRequest(), argv: ["npm", "ci"] }, worktree, artifacts, true).executable).toBe("npm");
+    expect(validateCommand({ ...devRequest(), argv: ["npm", "update"] }, worktree, artifacts, true).executable).toBe("npm");
+  });
+
+  it("allows git switch, checkout, merge, rebase, fetch, pull in development mode", () => {
+    const devRequest = () => ({ argv: [], cwd: worktree, taskId: "DEV-002" });
+    expect(validateCommand({ ...devRequest(), argv: ["git", "switch", "feature/test"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "checkout", "feature/test"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "merge", "feature/test"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "rebase", "feature/base"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "fetch", "origin"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "pull", "origin", "feature/test"] }, worktree, artifacts, true).executable).toBe("git");
+  });
+
+  it("allows git push to feature branches in development mode", () => {
+    const devRequest = () => ({ argv: [], cwd: worktree, taskId: "DEV-003" });
+    expect(validateCommand({ ...devRequest(), argv: ["git", "push", "origin", "feature/test"] }, worktree, artifacts, true).executable).toBe("git");
+    expect(validateCommand({ ...devRequest(), argv: ["git", "push", "-u", "origin", "feat/my-branch"] }, worktree, artifacts, true).executable).toBe("git");
+  });
+
+  it("blocks push to protected branches in development mode", () => {
+    const devRequest = () => ({ argv: [], cwd: worktree, taskId: "DEV-004" });
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "push", "origin", "main"] }, worktree, artifacts, true)).toThrow("forbidden_push_target");
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "push", "origin", "master"] }, worktree, artifacts, true)).toThrow("forbidden_push_target");
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "push", "origin", "production"] }, worktree, artifacts, true)).toThrow("forbidden_push_target");
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "push", "origin", "origin/main"] }, worktree, artifacts, true)).toThrow("forbidden_push_target");
+  });
+
+  it("blocks merge/rebase/pull into protected branches in development mode", () => {
+    const devRequest = () => ({ argv: [], cwd: worktree, taskId: "DEV-005" });
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "merge", "main"] }, worktree, artifacts, true)).toThrow("forbidden_protected_operation");
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "rebase", "origin/main"] }, worktree, artifacts, true)).toThrow("forbidden_protected_operation");
+    expect(() => validateCommand({ ...devRequest(), argv: ["git", "pull", "origin", "production"] }, worktree, artifacts, true)).toThrow("forbidden_protected_operation");
+  });
+
+  it("blocks push in production mode", () => {
+    expect(() => validateCommand(request(["git", "push", "origin", "feature/test"]), worktree, artifacts, false)).toThrow("forbidden_git_subcommand");
+  });
+});

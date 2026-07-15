@@ -37,17 +37,21 @@ const PRODUCTION_ALLOWED: Record<string, Set<string> | null> = {
  * Development Allowed Commands
  * Additional commands allowed in development mode only.
  * These relaxations do NOT apply to production environments.
+ * Per Development Runtime Policy v2.
  */
 const DEVELOPMENT_ALLOWED: Record<string, Set<string> | null> = {
-  npm: new Set(["run", "test", "install", "build", "lint", "typecheck"]),
+  npm: new Set(["run", "test", "install", "ci", "update", "build", "lint", "typecheck"]),
   node: null,
   ffmpeg: null,
   ffprobe: null,
   git: new Set([
     "status", "diff", "add", "commit", "rev-parse", "branch", "worktree", "log", "show", "ls-files",
-    "switch",    // Switch branches (development only)
-    "checkout",  // Checkout files/branches (development only)
-    "merge",     // Merge branches (development only, see MERGE_PROTECTED_BRANCHES)
+    "switch",     // Switch branches
+    "checkout",   // Checkout files/branches
+    "merge",      // Merge branches (protected branch check)
+    "rebase",     // Rebase (protected branch check)
+    "fetch",      // Fetch from remote
+    "pull",       // Pull from remote (protected branch check)
   ]),
 };
 
@@ -56,40 +60,80 @@ const DEVELOPMENT_ALLOWED: Record<string, Set<string> | null> = {
  * These are blocked in ALL contexts regardless of environment.
  */
 const ALWAYS_FORBIDDEN_GIT = new Set([
-  "push", "force-push", "push--force",  // Direct push to remote
-  "remote",                                  // Remote management
-  "config",                                  // Git configuration (could modify safe.directory)
-  "rebase",                                  // Rebase can rewrite history
-  "reset",                                   // Reset can lose commits
-  "clean",                                   // Clean can delete files
-  "fetch",                                   // Fetch from remote
-  "pull",                                    // Pull from remote
-  "tag",                                     // Tag management
+  "force-push", "push--force",  // Force push is always blocked (see push protection for regular push)
+  "remote",                     // Remote management
+  "config",                     // Git configuration (could modify safe.directory)
+  "reset",                      // Reset can lose commits
+  "clean",                      // Clean can delete files
+  "tag",                        // Tag management
 ]);
 
 /**
  * Production-Protected Git Branches
- * These branches can NEVER be the target of merge operations.
+ * These branches can NEVER be the target of merge, push, or rebase operations.
  */
-const MERGE_PROTECTED_BRANCHES = new Set([
+const PROTECTED_BRANCHES = new Set([
   "main", "master", "production", "release", "prod", "stable",
   "origin/main", "origin/master", "origin/production", "origin/release",
+  "openhands/main", "openhands/master", "openhands/production",
 ]);
+
+/**
+ * Check if branch is protected for push/merge/rebase operations.
+ */
+function isProtectedBranch(branch: string): boolean {
+  const lower = branch.toLowerCase();
+  return Array.from(PROTECTED_BRANCHES).some((pb) => lower.includes(pb.toLowerCase()));
+}
 
 const secretPattern = /(token|password|secret|authorization|private[-_]?key)=/i;
 
 /**
- * Merge target protection: prevents merging into protected branches
+ * Protected branch operations: prevents merge/rebase/pull into protected branches
  */
-function validateMergeTarget(args: string[]): void {
-  const mergeIndex = args.indexOf("merge");
-  if (mergeIndex >= 0 && args.length > mergeIndex + 1) {
-    const targetBranch = args[mergeIndex + 1];
-    for (const protectedBranch of MERGE_PROTECTED_BRANCHES) {
-      if (targetBranch.includes(protectedBranch)) {
-        throw new Error(`forbidden_merge_target:merging into ${protectedBranch} is not allowed`);
-      }
+function validateProtectedBranchOperation(args: string[], operation: string): void {
+  // Find the branch argument for merge, rebase, pull
+  const opIndex = args.indexOf(operation);
+  if (opIndex >= 0 && args.length > opIndex + 1) {
+    // For pull, the format is "git pull remote branch"
+    // For merge/rebase, the format is "git merge/rebase branch"
+    let targetBranch = args[opIndex + 1];
+    // Skip remote for pull commands (the next arg is the remote, then the branch)
+    if (operation === "pull" && args.length > opIndex + 2 && !args[opIndex + 1].startsWith("-")) {
+      targetBranch = args[opIndex + 2] || args[opIndex + 1];
     }
+    if (isProtectedBranch(targetBranch)) {
+      throw new Error(`forbidden_protected_operation:${operation} on ${targetBranch} is not allowed`);
+    }
+  }
+  // Also check -d (delete) and -D (force delete) flags
+  const deleteMatch = args.findIndex((a) => a === "-d" || a === "-D");
+  if (deleteMatch >= 0 && args.length > deleteMatch + 1) {
+    const branchToDelete = args[deleteMatch + 1];
+    if (isProtectedBranch(branchToDelete)) {
+      throw new Error(`forbidden_protected_operation:deleting protected branch ${branchToDelete} is not allowed`);
+    }
+  }
+}
+
+/**
+ * Push validation: allows push to feature branches only (development mode)
+ */
+function validatePushTarget(args: string[], developmentMode: boolean): void {
+  if (!developmentMode) {
+    throw new Error("forbidden_git_subcommand:push is only allowed in development mode");
+  }
+  // Extract branch from push commands like "git push origin branch" or "git push -u origin branch"
+  const originIndex = args.indexOf("origin");
+  if (originIndex >= 0 && args.length > originIndex + 1) {
+    const branch = args[originIndex + 1];
+    if (isProtectedBranch(branch)) {
+      throw new Error(`forbidden_push_target:push to ${branch} is not allowed`);
+    }
+  }
+  // Check --delete flag for deleting remote branches
+  if (args.includes("--delete")) {
+    throw new Error("forbidden_git_subcommand:remote branch deletion is not allowed");
   }
 }
 
@@ -113,13 +157,30 @@ export function validateCommand(request: CommandRequest, worktree: string, artif
     const subcommand = request.argv[1];
     // Check ALWAYS forbidden git subcommands
     if (ALWAYS_FORBIDDEN_GIT.has(subcommand)) throw new Error(`forbidden_git_subcommand:${subcommand}`);
-    
-    // In development mode, check against development allowed set
-    const allowedGitCommands = developmentMode ? DEVELOPMENT_ALLOWED.git : PRODUCTION_ALLOWED.git;
-    if (!subcommand || !allowedGitCommands?.has(subcommand)) throw new Error(`forbidden_git_subcommand:${subcommand ?? "missing"}`);
-    
-    // Validate merge targets (production + development)
-    validateMergeTarget(request.argv);
+
+    // Handle push specially: allowed in dev mode with branch protection, blocked in production
+    if (subcommand === "push") {
+      if (!developmentMode) {
+        throw new Error("forbidden_git_subcommand:push is only allowed in development mode");
+      }
+      validatePushTarget(request.argv, developmentMode);
+    } else {
+      // In development mode, check against development allowed set
+      const allowedGitCommands = developmentMode ? DEVELOPMENT_ALLOWED.git : PRODUCTION_ALLOWED.git;
+      if (!subcommand || !allowedGitCommands?.has(subcommand)) {
+        throw new Error(`forbidden_git_subcommand:${subcommand ?? "missing"}`);
+      }
+
+      // Validate protected branch operations
+      if (developmentMode) {
+        validateProtectedBranchOperation(request.argv, "merge");
+        validateProtectedBranchOperation(request.argv, "rebase");
+        validateProtectedBranchOperation(request.argv, "pull");
+      } else {
+        // In production, just check merge (other ops already blocked by ALWAYS_FORBIDDEN_GIT or not in allowed set)
+        validateProtectedBranchOperation(request.argv, "merge");
+      }
+    }
   } else {
     const verbs = allowed[executable];
     if (verbs && !verbs.has(request.argv[1])) throw new Error(`forbidden_command_mode:${executable}:${request.argv[1] ?? "missing"}`);
