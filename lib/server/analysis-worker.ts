@@ -219,6 +219,7 @@ async function processJob(
   workerId: string,
   providers: ProviderRegistry,
 ) {
+  const executionDirectory = workDirectory(job.id, job.attempt, randomUUID());
   const sourceEvents: AnyAnalysisEvent[] = [];
   const append = <T extends AnalysisEventType>(type: T, payload: EventPayload<T>) => {
     const event = store.appendEvent(job.id, job.attempt, type, payload, eventKey(job, type));
@@ -277,7 +278,7 @@ async function processJob(
     let audioPath: string | null = null;
     if (metadata.audioPresent) {
       try {
-        audioPath = await extractAnalysisAudio(job.sourcePath, workDirectory(job.id, job.attempt));
+        audioPath = await extractAnalysisAudio(job.sourcePath, executionDirectory);
       } catch {
         fail({
           stage: "audio_extraction",
@@ -347,7 +348,7 @@ async function processJob(
     }
   } finally {
     clearInterval(leaseHeartbeat);
-    if (ownsLease) await removeWorkDirectory(workDirectory(job.id, job.attempt));
+    await removeWorkDirectory(executionDirectory);
   }
 }
 

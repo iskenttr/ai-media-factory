@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ProviderRegistry } from "@/lib/providers/provider-registry";
+
 import { AnalysisStore } from "./store";
 
 describe("AnalysisStore", () => {
@@ -122,6 +124,30 @@ describe("AnalysisStore", () => {
       child.on("close", (code) => {
         if (code === 0) resolve(stdout.trim());
         else reject(new Error(`Translation process exited ${code}: ${stderr}`));
+      });
+    });
+  }
+
+  function runRegenerationQueueProcess(
+    runnerPath: string,
+    databasePath: string,
+    runId: string,
+    sourceSegmentId: string,
+    readyPath: string,
+    gatePath: string,
+  ) {
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "--import", "tsx", runnerPath, databasePath, runId, sourceSegmentId, readyPath, gatePath,
+      ], { cwd: process.cwd() });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) resolve(stdout.trim());
+        else reject(new Error(`Regeneration queue process exited ${code}: ${stderr}`));
       });
     });
   }
@@ -611,6 +637,75 @@ describe("AnalysisStore", () => {
       revisionOrigin: "user",
       revisionCount: 3,
     });
+  });
+
+  it("coalesces concurrent regeneration requests and allows retries after terminal history", async () => {
+    const { runId, sourceSegmentId, providerResult } = createPendingLocalization();
+    expect(store.queueTranslationRegeneration(runId, sourceSegmentId, "another-owner")).toBeNull();
+    const databasePath = path.join(directory, "events.sqlite");
+    const runnerPath = path.join(directory, "regeneration-queue-runner.ts");
+    const gatePath = path.join(directory, "regeneration-queue-gate");
+    const readyPaths = [path.join(directory, "regeneration-ready-1"), path.join(directory, "regeneration-ready-2")];
+    const storeModuleUrl = pathToFileURL(path.resolve("lib/server/store.ts")).href;
+    await writeFile(runnerPath, `
+      import { existsSync, writeFileSync } from "node:fs";
+      import { AnalysisStore } from ${JSON.stringify(storeModuleUrl)};
+      async function main() {
+        const [databasePath, runId, sourceSegmentId, readyPath, gatePath] = process.argv.slice(2);
+        writeFileSync(readyPath, "ready");
+        while (!existsSync(gatePath)) await new Promise((resolve) => setTimeout(resolve, 5));
+        const store = new AnalysisStore(databasePath);
+        try {
+          console.log(store.queueTranslationRegeneration(runId, sourceSegmentId, "owner-hash"));
+        } finally {
+          store.close();
+        }
+      }
+      main().catch((error) => { console.error(error); process.exitCode = 1; });
+    `);
+    const attempts = readyPaths.map((readyPath) => runRegenerationQueueProcess(
+      runnerPath, databasePath, runId, sourceSegmentId, readyPath, gatePath,
+    ));
+    await Promise.all(readyPaths.map(waitForFile));
+    await writeFile(gatePath, "go");
+
+    const [firstJobId, secondJobId] = await Promise.all(attempts);
+    expect(secondJobId).toBe(firstJobId);
+    const inspection = new DatabaseSync(databasePath);
+    expect(inspection.prepare(`
+      SELECT COUNT(*) AS count FROM translation_regeneration_jobs
+      WHERE run_id = ? AND source_segment_id = ? AND status IN ('queued', 'running')
+    `).get(runId, sourceSegmentId)).toMatchObject({ count: 1 });
+    inspection.close();
+    expect(store.listLocalizationEvents(runId).filter((event) => event.type === "translation_segment_regeneration_queued"))
+      .toHaveLength(1);
+
+    const translate = vi.fn(async () => ({ ...providerResult, timingAssessment: null }));
+    const providers = {
+      translation: vi.fn(async () => ({ translate })),
+    } as unknown as ProviderRegistry;
+    const { runLocalizationWorkerOnce } = await import("./localization-worker");
+    await expect(runLocalizationWorkerOnce(store, "regeneration-worker", providers)).resolves.toBe(true);
+    await expect(runLocalizationWorkerOnce(store, "regeneration-worker", providers)).resolves.toBe(false);
+    expect(translate).toHaveBeenCalledOnce();
+
+    const completedRetryId = store.queueTranslationRegeneration(runId, sourceSegmentId, "owner-hash");
+    expect(completedRetryId).not.toBe(firstJobId);
+    expect(store.claimNextTranslationRegenerationJob("retry-worker", 30_000)).toMatchObject({ id: completedRetryId });
+    expect(store.failTranslationRegenerationJob(completedRetryId!, "retry-worker", "provider_unavailable")).toBe(true);
+    const failedRetryId = store.queueTranslationRegeneration(runId, sourceSegmentId, "owner-hash");
+    expect(failedRetryId).not.toBe(completedRetryId);
+
+    const history = new DatabaseSync(databasePath);
+    expect(history.prepare(`SELECT status, COUNT(*) AS count FROM translation_regeneration_jobs GROUP BY status ORDER BY status`).all())
+      .toEqual([
+        { status: "completed", count: 1 },
+        { status: "failed", count: 1 },
+        { status: "queued", count: 1 },
+      ]);
+    history.close();
+    expect(store.listLocalizationEvents(runId).filter((event) => event.type === "translation_segment_regeneration_queued"))
+      .toHaveLength(3);
   });
 
   it("keeps the source transcript immutable while applying versioned user corrections", () => {

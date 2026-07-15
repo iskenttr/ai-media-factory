@@ -39,8 +39,16 @@ export function uploadDirectory(uploadId: string) {
   return path.join(serverConfig.storageRoot, "uploads", uploadId);
 }
 
-export function workDirectory(jobId: string, attempt: number) {
-  return path.join(serverConfig.storageRoot, "work", `${jobId}-${attempt}`);
+const safeWorkPathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function workDirectory(jobId: string, attempt: number, executionToken: string) {
+  if (!safeWorkPathSegment.test(jobId) || !safeWorkPathSegment.test(executionToken)) {
+    throw new Error("invalid_work_directory_segment");
+  }
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new Error("invalid_work_directory_attempt");
+  }
+  return path.join(serverConfig.storageRoot, "work", `${jobId}-${attempt}`, executionToken);
 }
 
 export function renderDirectory(renderId: string) {

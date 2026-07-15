@@ -277,6 +277,9 @@ describe("analysis worker without an external model", () => {
     expect(saveLocalizationPlan).not.toHaveBeenCalled();
     expect(completeJob).not.toHaveBeenCalled();
     expect(failJob).not.toHaveBeenCalled();
-    expect(removeWorkDirectory).not.toHaveBeenCalled();
+    expect(removeWorkDirectory).toHaveBeenCalledOnce();
+    expect(removeWorkDirectory).toHaveBeenCalledWith(expect.stringMatching(
+      /[/\\]work[/\\]job-1-1[/\\][0-9a-f-]{36}$/,
+    ));
   });
 });
