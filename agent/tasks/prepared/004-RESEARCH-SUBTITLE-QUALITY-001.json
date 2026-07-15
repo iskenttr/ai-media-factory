@@ -1,0 +1,39 @@
+{
+  "task_id": "RESEARCH-SUBTITLE-QUALITY-001",
+  "title": "Research: external subtitle quality evaluation tools",
+  "priority": "medium",
+  "enabled": false,
+  "objective": "Survey external subtitle quality evaluation tools that complement the existing deterministic TypeScript Subtitle Quality Engine. Cover: SubER (apptek, Apache 2.0, segmentation+timing-aware edit distance, WER/BLEU/TER on SRT), EvalSubtitle/Sigma (fyvo, Apache 2.0, segmentation quality scoring), SubSonar (hlt-mt, Apache 2.0, semantic similarity via SONAR embeddings). For each: what it measures, how it differs from the existing CPS/overlap/duration engine, integration point (benchmark harness vs runtime), install command. Recommend which to adopt as the primary CI benchmark metric. Write results to docs/research/RESEARCH-SUBTITLE-QUALITY-001.md only.",
+  "allowed_paths": [
+    "docs/research/RESEARCH-SUBTITLE-QUALITY-001.md",
+    "SUBTITLE_ENGINE.md",
+    "lib/providers/contracts/speech-analysis-provider.ts"
+  ],
+  "forbidden_paths": [
+    "production", "deploy", "storage", ".env", ".git", "agent/policies", "lib/server", "app", "worker"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": false,
+    "integration_tests_pass": false,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 20,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 20
+  },
+  "limits": {
+    "maximum_iterations": 1,
+    "maximum_changed_files": 1,
+    "maximum_diff_lines": 600,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 2,
+    "maximum_model_tokens": 80000,
+    "maximum_execution_ms": 900000
+  },
+  "required_artifacts": ["technical-summary.md"],
+  "test_commands": [],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["SUBTITLE_ENGINE.md"],
+    "repair_strategy": "none"
+  }
+}

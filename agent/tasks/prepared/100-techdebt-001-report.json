@@ -1,0 +1,32 @@
+{
+  "task_id": "TECHDEBT-001",
+  "title": "Identify high-value technical debt",
+  "priority": "medium",
+  "objective": "Produce an evidence-backed prioritized technical debt report with measurable risk, expected value, bounded scope, and verification recommendations; do not implement the proposals.",
+  "enabled": false,
+  "allowed_paths": ["SYSTEM_ARCHITECTURE.md", "docs/TECHNICAL_DEBT_REPORT.md"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": false,
+    "integration_tests_pass": false,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 2,
+    "maximum_changed_files": 1,
+    "maximum_diff_lines": 800,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 2,
+    "maximum_execution_ms": 600000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "run", "typecheck"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["SYSTEM_ARCHITECTURE.md"],
+    "repair_strategy": "none"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "tools": {
+    "core": []
+  },
+  "security": {
+    "disableYoloMode": true,
+    "disableAlwaysAllow": true,
+    "blockGitExtensions": true
+  },
+  "admin": {
+    "secureModeEnabled": true,
+    "extensions": {
+      "enabled": false
+    },
+    "mcp": {
+      "enabled": false
+    },
+    "skills": {
+      "enabled": false
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  }
+}

@@ -20,3 +20,4 @@ outputs/
 *.bak
 quality-reports/
 visual-diffs/
+.env.agent*

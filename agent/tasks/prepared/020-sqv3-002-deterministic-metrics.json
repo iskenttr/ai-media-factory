@@ -1,0 +1,32 @@
+{
+  "task_id": "SQV3-002",
+  "title": "Add deterministic subtitle quality metrics",
+  "priority": "high",
+  "objective": "Extend V3 deterministic evaluation with measurable timing, CPS, line, speaker, timestamp, ASS, duration, safe-area, and critical-error coverage while preserving compatibility.",
+  "enabled": false,
+  "allowed_paths": ["lib/subtitle-quality/v3/**"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": false,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 1,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 5,
+    "maximum_changed_files": 10,
+    "maximum_diff_lines": 1400,
+    "maximum_render_attempts": 2,
+    "maximum_model_calls": 5,
+    "maximum_execution_ms": 1200000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "lib/subtitle-quality/v3"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["lib/subtitle-quality/v3/contracts.ts", "lib/subtitle-quality/v3/evaluator.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "task_id": "BENCH-001",
+  "title": "Create initial golden benchmark structure",
+  "priority": "high",
+  "objective": "Add manifest and comparison support for sanitized fixtures while keeping golden approval pending until a human approves provenance, checksums, expected metrics, and frames.",
+  "enabled": false,
+  "allowed_paths": ["benchmarks/**", "agent/evaluators/**"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 4,
+    "maximum_changed_files": 12,
+    "maximum_diff_lines": 1400,
+    "maximum_render_attempts": 2,
+    "maximum_model_calls": 4,
+    "maximum_execution_ms": 1200000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "agent"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["benchmarks/fixtures/README.md", "benchmarks/golden/README.md", "agent/evaluators/benchmark.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

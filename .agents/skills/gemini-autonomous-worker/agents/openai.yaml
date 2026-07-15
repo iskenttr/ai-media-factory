@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gemini Autonomous Worker"
+  short_description: "Run bounded Vertex AI coding workers safely"
+  default_prompt: "Use $gemini-autonomous-worker to execute this engineering task in an isolated worktree with bounded Vertex AI usage."

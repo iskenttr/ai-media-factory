@@ -1,0 +1,32 @@
+{
+  "task_id": "SQV3-006",
+  "title": "Improve Turkish line-break quality",
+  "priority": "high",
+  "objective": "Improve balanced two-line Turkish wrapping using deterministic measured width and natural phrase boundaries while preventing clipping and unreadable font reduction.",
+  "enabled": false,
+  "allowed_paths": ["lib/subtitle-quality/**", "lib/server/video-renderer.ts", "lib/server/video-renderer.test.ts"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 1,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 6,
+    "maximum_changed_files": 12,
+    "maximum_diff_lines": 1800,
+    "maximum_render_attempts": 4,
+    "maximum_model_calls": 6,
+    "maximum_execution_ms": 2400000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "lib/subtitle-quality", "lib/server/video-renderer.test.ts"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["lib/subtitle-quality/engine.ts", "lib/subtitle-quality/engine.test.ts", "lib/server/video-renderer.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}
