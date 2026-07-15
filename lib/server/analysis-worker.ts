@@ -30,6 +30,12 @@ interface StageResults {
   contentProfile: EventPayload<"content_profile_completed">;
 }
 
+class AnalysisLeaseLost extends Error {
+  constructor() {
+    super("analysis_lease_lost");
+  }
+}
+
 function unavailable(reason: UnavailableReason) {
   return { availability: "unavailable" as const, reason };
 }
@@ -106,6 +112,7 @@ async function analyzeStages(
   metadata: MediaMetadata,
   audioPath: string | null,
   providers: ProviderRegistry,
+  assertLease: () => void,
 ): Promise<{ results: StageResults; speech: SpeechObservation | null }> {
   if (!metadata.audioPresent || !audioPath) {
     const noAudio = unavailable("audio_missing");
@@ -124,12 +131,17 @@ async function analyzeStages(
   let speechQuality: StageResults["speechQuality"];
   try {
     speechQuality = { availability: "available", ...await assessAudioSignal(job.sourcePath, metadata.durationMs) };
-  } catch {
+    assertLease();
+  } catch (error) {
+    if (error instanceof AnalysisLeaseLost) throw error;
+    assertLease();
     speechQuality = unavailable("insufficient_signal");
   }
 
   const speechProvider = await providers.speech();
+  assertLease();
   const speakerProvider = await providers.speakers();
+  assertLease();
   let speech: SpeechObservation | null = null;
   let language: StageResults["language"] = unavailable("model_not_configured");
   let pacing: StageResults["pacing"] = unavailable("model_not_configured");
@@ -141,11 +153,14 @@ async function analyzeStages(
   if (speechProvider) {
     try {
       speech = await speechProvider.analyze(audioPath);
+      assertLease();
       language = speech.language
         ? { availability: "available", language: speech.language }
         : unavailable("insufficient_speech");
       pacing = computePacing(speech, metadata.durationMs);
     } catch (error) {
+      if (error instanceof AnalysisLeaseLost) throw error;
+      assertLease();
       const failure = unavailable(providerFailureReason(error));
       language = failure;
       pacing = failure;
@@ -155,7 +170,10 @@ async function analyzeStages(
   if (speakerProvider) {
     try {
       speakers = await speakerProvider.analyze(audioPath);
+      assertLease();
     } catch (error) {
+      if (error instanceof AnalysisLeaseLost) throw error;
+      assertLease();
       const reason = providerFailureReason(error);
       speakers = speakerUnavailable(
         reason,
@@ -181,7 +199,10 @@ async function analyzeStages(
         pacing,
         speechQuality,
       });
-    } catch {
+      assertLease();
+    } catch (error) {
+      if (error instanceof AnalysisLeaseLost) throw error;
+      assertLease();
       contentProfile = contentUnavailable(
         "provider_unavailable",
         "The content evidence provider could not complete classification.",
@@ -204,10 +225,31 @@ async function processJob(
     sourceEvents.push(event as AnyAnalysisEvent);
     return event;
   };
+  let ownsLease = true;
+  const renewOwnership = () => {
+    if (!ownsLease) return;
+    try {
+      ownsLease = store.renewLease(job.id, workerId, serverConfig.workerLeaseMs);
+    } catch {
+      ownsLease = false;
+    }
+    return ownsLease;
+  };
+  const assertOwnership = () => {
+    if (!renewOwnership()) throw new AnalysisLeaseLost();
+  };
   const leaseHeartbeat = setInterval(
-    () => store.renewLease(job.id, workerId, serverConfig.workerLeaseMs),
+    renewOwnership,
     Math.max(1_000, Math.floor(serverConfig.workerLeaseMs / 3)),
   );
+
+  const fail = (payload: EventPayload<"analysis_failed">) => {
+    if (!renewOwnership() || !store.failJob(job.id, workerId, String(payload.reason))) {
+      ownsLease = false;
+      return;
+    }
+    append("analysis_failed", payload);
+  };
 
   try {
     append("upload_received", {
@@ -221,40 +263,41 @@ async function processJob(
     try {
       metadata = await probeMedia(job.sourcePath);
     } catch {
-      const failure = append("analysis_failed", {
+      fail({
         stage: "media_metadata",
         retryable: false,
         reason: "unsupported_media",
         safeMessage: "I couldn’t read this video safely. Please choose another video.",
       });
-      store.failJob(job.id, String(failure.payload.reason));
       return;
     }
+    assertOwnership();
     append("media_metadata_ready", { availability: "available", ...metadata });
 
     let audioPath: string | null = null;
     if (metadata.audioPresent) {
       try {
         audioPath = await extractAnalysisAudio(job.sourcePath, workDirectory(job.id, job.attempt));
-        append("audio_extracted", {
-          availability: "available",
-          sampleRateHz: 16000,
-          channels: 1,
-          format: "wav",
-        });
       } catch {
-        const failure = append("analysis_failed", {
+        fail({
           stage: "audio_extraction",
           retryable: true,
           reason: "audio_extraction_failed",
           safeMessage: "I couldn’t prepare the audio for analysis. Your upload is safe.",
         });
-        store.failJob(job.id, String(failure.payload.reason));
         return;
       }
+      assertOwnership();
+      append("audio_extracted", {
+        availability: "available",
+        sampleRateHz: 16000,
+        channels: 1,
+        format: "wav",
+      });
     }
 
-    const { results, speech } = await analyzeStages(job, metadata, audioPath, providers);
+    const { results, speech } = await analyzeStages(job, metadata, audioPath, providers, assertOwnership);
+    assertOwnership();
     const observationEvents = [
       append("language_detected", results.language),
       append("speaker_analysis_completed", results.speakers),
@@ -293,14 +336,18 @@ async function processJob(
       });
     }
 
+    assertOwnership();
     const snapshot = buildAnalysisSnapshot(sourceEvents);
     const plan = store.saveLocalizationPlan(job.id, job.attempt, createLocalizationPlan(snapshot));
     if (transcriptId) store.ensureLocalizationProject(job.id, transcriptId);
-    append("analysis_completed", { readiness: plan.status, sourceEventIds: plan.sourceEventIds });
-    store.completeJob(job.id, plan.status);
+    if (ownsLease && store.completeJob(job.id, workerId, plan.status)) {
+      append("analysis_completed", { readiness: plan.status, sourceEventIds: plan.sourceEventIds });
+    } else {
+      ownsLease = false;
+    }
   } finally {
     clearInterval(leaseHeartbeat);
-    await removeWorkDirectory(workDirectory(job.id, job.attempt));
+    if (ownsLease) await removeWorkDirectory(workDirectory(job.id, job.attempt));
   }
 }
 
@@ -319,14 +366,17 @@ export async function runWorkerOnce(
 
   try {
     await processJob(store, job, workerId, providers);
-  } catch {
-    const failure = store.appendEvent(job.id, job.attempt, "analysis_failed", {
+  } catch (error) {
+    if (error instanceof AnalysisLeaseLost) return true;
+    const failure: EventPayload<"analysis_failed"> = {
       stage: "analysis",
       retryable: true,
       reason: "analysis_interrupted",
       safeMessage: "I couldn’t finish understanding this video. Your upload is safe.",
-    }, eventKey(job, "analysis_failed"));
-    store.failJob(job.id, String(failure.payload.reason));
+    };
+    if (store.failJob(job.id, workerId, String(failure.reason))) {
+      store.appendEvent(job.id, job.attempt, "analysis_failed", failure, eventKey(job, "analysis_failed"));
+    }
   }
   return true;
 }
