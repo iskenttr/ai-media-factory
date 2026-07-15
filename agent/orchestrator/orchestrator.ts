@@ -5,7 +5,7 @@ import { renderSmokeArtifact } from "../evaluators/render-analysis-agent";
 import { writeBenchmarkReports } from "../evaluators/benchmark";
 import { sendCompletionNotification } from "../notifications/email";
 import { inspectDiff } from "../policies/diff-policy";
-import { validateTaskSafety, type EngineeringTask, type TaskState } from "../tasks/schema";
+import { validateTaskSafety, isDevelopmentMode, type EngineeringTask, type TaskState } from "../tasks/schema";
 import { commitCandidate, createTaskWorktree, inspectWorktree, publishAcceptedCandidate, resolveHead } from "../workers/git-gateway";
 import { implementTask } from "../workers/engineering-agent";
 import { runQa } from "../workers/qa-agent";
@@ -72,21 +72,22 @@ async function finalize(root: string, task: EngineeringTask, runtime: TaskRuntim
 }
 
 export async function processTask(root: string, task: EngineeringTask, processingFile?: string) {
+  const developmentMode = isDevelopmentMode();
   const startedAt = Date.now();
   const artifactDirectory = path.join(root, "artifacts", task.task_id, new Date().toISOString().replace(/[:.]/g, "-"));
   await mkdir(artifactDirectory, { recursive: true });
   const runtime: TaskRuntime = { state: "QUEUED", branch: "not-created", commitHash: null, files: [], startedAt, worktree: "not-created", artifactDirectory };
-  await appendAudit(root, { timestamp: new Date().toISOString(), taskId: task.task_id, category: "state", event: "TASK_CREATED", detail: { state: "QUEUED" } });
+  await appendAudit(root, { timestamp: new Date().toISOString(), taskId: task.task_id, category: "state", event: "TASK_CREATED", detail: { state: "QUEUED", developmentMode } });
   try {
     await transition(root, task.task_id, runtime, "ANALYZING");
-    validateTaskSafety(task);
-    if (productionRequest(task)) {
+    validateTaskSafety(task, developmentMode);
+    if (!developmentMode && productionRequest(task)) {
       await transition(root, task.task_id, runtime, "BLOCKED_REQUIRES_HUMAN_APPROVAL", { reason: "production_access_requested" });
       return await finalize(root, task, runtime, "not_run", "not_run", null, 0, processingFile);
     }
     const baseCommit = await resolveHead(root, task.task_id);
-    await transition(root, task.task_id, runtime, "PLANNED", { baseCommit });
-    await appendAudit(root, { timestamp: new Date().toISOString(), taskId: task.task_id, category: "system", event: "worktree_prep_requested", detail: { baseCommit } });
+    await transition(root, task.task_id, runtime, "PLANNED", { baseCommit, developmentMode });
+    await appendAudit(root, { timestamp: new Date().toISOString(), taskId: task.task_id, category: "system", event: "worktree_prep_requested", detail: { baseCommit, developmentMode } });
     const isolated = await createTaskWorktree(root, task.task_id, task.title, baseCommit);
     runtime.branch = isolated.branch;
     runtime.worktree = isolated.worktree;
@@ -133,7 +134,7 @@ export async function processTask(root: string, task: EngineeringTask, processin
         renderArtifactsComplete: benchmark.artifactsComplete,
       });
       if (accepted) {
-        inspectDiff(task, candidate.files, candidate.patch);
+        inspectDiff(task, candidate.files, candidate.patch, developmentMode);
         runtime.commitHash = await commitCandidate(root, task.task_id, runtime.worktree, candidate.files, `agent(${task.task_id}): ${task.title}`);
         if (process.env.AMF_AGENT_AUTO_PUSH_ACCEPTED === "true") {
           try {
