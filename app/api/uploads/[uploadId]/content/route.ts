@@ -39,7 +39,15 @@ export async function PUT(request: Request, context: RouteContext) {
   const directory = uploadDirectory(uploadId);
   const temporaryPath = path.join(directory, "source.part");
   await mkdir(directory, { recursive: true });
-  const file = await open(temporaryPath, "wx");
+  let file;
+  try {
+    file = await open(temporaryPath, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return NextResponse.json({ error: "upload_in_progress" }, { status: 409 });
+    }
+    throw error;
+  }
   const hash = createHash("sha256");
   let actualSize = 0;
 
