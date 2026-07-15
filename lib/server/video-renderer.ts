@@ -16,6 +16,7 @@ import { choosePlacement } from "@/lib/subtitle-quality/visual";
 import type { AlignedWord } from "@/lib/subtitle-quality/contracts";
 import { passesQualityGate, qualitySnapshot } from "@/lib/subtitle-quality/validation";
 import { nextRepair } from "@/lib/subtitle-quality/repair";
+import { normalizeText } from "@/lib/text-utils";
 
 const ffmpegPath = process.env.FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 const ffprobePath = process.env.FFPROBE_PATH ?? ffprobeStatic.path ?? "ffprobe";
@@ -95,10 +96,6 @@ async function detectSubtitleLayout(sourcePath: string): Promise<SubtitleLayout 
     maxCharactersPerLine: profile.orientation === "vertical" ? 30 : 48,
     durationMs: Math.round(Number(parsed.format?.duration ?? 0) * 1_000),
   };
-}
-
-function normalizeText(text: string) {
-  return text.normalize("NFC").replace(/\s+/g, " ").trim();
 }
 
 export function rebalanceSubtitleCues(segments: RenderSubtitle[], maxCharactersPerLine: number) {
