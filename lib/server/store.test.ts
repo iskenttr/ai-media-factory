@@ -244,8 +244,9 @@ describe("AnalysisStore", () => {
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);
+    expect(store.claimNextLocalizationRun("localization-worker", 30_000)).toMatchObject({ id: runId });
     const sourceSegmentId = store.getStudioProjectForOwner(jobId, "owner-hash")!.segments[0].id;
-    store.saveTranslationProviderResult(runId, {
+    store.saveTranslationProviderResult(runId, "localization-worker", {
       availability: "available",
       translatedText: "Merhaba",
       providerVersion: "test-provider-v1",
@@ -264,7 +265,7 @@ describe("AnalysisStore", () => {
       failureReason: null,
       provenance: { contextSnapshotId: "snapshot", inputFingerprint: "input", resultFingerprint: "result" },
     });
-    store.finishLocalizationRun(runId, "completed");
+    store.finishLocalizationRun(runId, "localization-worker", "completed");
     return store.queueVideoRender(runId, "owner-hash")!;
   }
 
@@ -291,6 +292,7 @@ describe("AnalysisStore", () => {
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);
+    expect(store.claimNextLocalizationRun("localization-worker", 30_000)).toMatchObject({ id: runId });
     const sourceSegmentId = store.getStudioProjectForOwner(jobId, "owner-hash")!.segments[0].id;
     const providerResult = {
       availability: "available" as const,
@@ -450,7 +452,7 @@ describe("AnalysisStore", () => {
     `).run(runId, sourceSegmentId, JSON.stringify(providerResult), new Date().toISOString());
     database.close();
 
-    expect(store.saveTranslationProviderResult(runId, providerResult)).toEqual({ status: "translated", revision: 1 });
+    expect(store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toEqual({ status: "translated", revision: 1 });
     expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
       status: "translated",
       translatedText: "Merhaba",
@@ -477,7 +479,7 @@ describe("AnalysisStore", () => {
         while (!existsSync(gatePath)) await new Promise((resolve) => setTimeout(resolve, 5));
         const store = new AnalysisStore(databasePath);
         try {
-          console.log(JSON.stringify(store.saveTranslationProviderResult(runId, JSON.parse(readFileSync(inputPath, "utf8")))));
+          console.log(JSON.stringify(store.saveTranslationProviderResult(runId, "localization-worker", JSON.parse(readFileSync(inputPath, "utf8")))));
         } finally {
           store.close();
         }
@@ -520,7 +522,7 @@ describe("AnalysisStore", () => {
     `);
     database.close();
 
-    expect(() => store.saveTranslationProviderResult(runId, providerResult)).toThrow("injected_translation_activation_failure");
+    expect(() => store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toThrow("injected_translation_activation_failure");
     const inspection = new DatabaseSync(databasePath);
     expect(inspection.prepare(`SELECT COUNT(*) AS count FROM translation_provider_results WHERE run_id = ?`).get(runId)).toMatchObject({ count: 0 });
     expect(inspection.prepare(`SELECT COUNT(*) AS count FROM translation_revisions WHERE origin = 'provider'`).get()).toMatchObject({ count: 0 });
@@ -536,12 +538,78 @@ describe("AnalysisStore", () => {
     expect(store.saveLocalizedSegmentUserRevision(runId, sourceSegmentId, "owner-hash", "Kullanıcı metni"))
       .toMatchObject({ revision: 1 });
 
-    expect(store.saveTranslationProviderResult(runId, providerResult)).toEqual({ status: "translated", revision: 1 });
+    expect(store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toEqual({ status: "translated", revision: 1 });
     expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
       translatedText: "Kullanıcı metni",
       revision: 1,
       revisionOrigin: "user",
       revisionCount: 2,
+    });
+  });
+
+  it("rejects stale localization writes after the run lease is reclaimed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const { runId, sourceSegmentId, providerResult } = createPendingLocalization();
+    expect(store.saveLocalizedSegmentUserRevision(runId, sourceSegmentId, "owner-hash", "Kullanıcı metni"))
+      .toMatchObject({ revision: 1 });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:30.001Z"));
+    expect(store.claimNextLocalizationRun("current-worker", 30_000)).toMatchObject({ id: runId });
+    expect(store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toBeNull();
+    expect(store.finishLocalizationRun(runId, "localization-worker", "completed")).toBe(false);
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      translatedText: "Kullanıcı metni",
+      revision: 1,
+      revisionOrigin: "user",
+      revisionCount: 1,
+    });
+
+    expect(store.saveTranslationProviderResult(runId, "current-worker", providerResult)).toMatchObject({
+      status: "translated",
+      revision: 1,
+    });
+    expect(store.finishLocalizationRun(runId, "current-worker", "completed")).toBe(true);
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      translatedText: "Kullanıcı metni",
+      revision: 1,
+      revisionOrigin: "user",
+      revisionCount: 2,
+    });
+  });
+
+  it("rejects stale regeneration writes after the job lease is reclaimed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const { runId, sourceSegmentId, providerResult } = createPendingLocalization();
+    expect(store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toMatchObject({ revision: 1 });
+    expect(store.saveLocalizedSegmentUserRevision(runId, sourceSegmentId, "owner-hash", "Kullanıcı metni"))
+      .toMatchObject({ revision: 2 });
+    const regenerationId = store.queueTranslationRegeneration(runId, sourceSegmentId, "owner-hash")!;
+    expect(store.claimNextTranslationRegenerationJob("stale-worker", 1)).toMatchObject({ id: regenerationId });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.002Z"));
+    expect(store.claimNextTranslationRegenerationJob("current-worker", 30_000)).toMatchObject({ id: regenerationId });
+    expect(store.saveTranslationRegenerationResult(regenerationId, "stale-worker", {
+      ...providerResult,
+      translatedText: "Eski worker metni",
+    })).toBeNull();
+    expect(store.failTranslationRegenerationJob(regenerationId, "stale-worker", "stale_failure")).toBe(false);
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      translatedText: "Kullanıcı metni",
+      revision: 2,
+      revisionCount: 2,
+    });
+
+    expect(store.saveTranslationRegenerationResult(regenerationId, "current-worker", {
+      ...providerResult,
+      translatedText: "Güncel worker metni",
+    })).toMatchObject({ status: "completed", revision: 3, activeRevisionPreserved: true });
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      translatedText: "Kullanıcı metni",
+      revision: 2,
+      revisionOrigin: "user",
+      revisionCount: 3,
     });
   });
 
@@ -603,6 +671,7 @@ describe("AnalysisStore", () => {
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);
+    expect(store.claimNextLocalizationRun("localization-worker", 30_000)).toMatchObject({ id: runId });
     const sourceSegmentId = store.getStudioProjectForOwner(jobId, "owner-hash")!.segments[0].id;
     const providerResult = {
       availability: "available" as const,
@@ -623,12 +692,12 @@ describe("AnalysisStore", () => {
       failureReason: null,
       provenance: { contextSnapshotId: "snapshot", inputFingerprint: "input", resultFingerprint: "result" },
     };
-    expect(store.saveTranslationProviderResult(runId, providerResult)).toMatchObject({ status: "translated", revision: 1 });
+    expect(store.saveTranslationProviderResult(runId, "localization-worker", providerResult)).toMatchObject({ status: "translated", revision: 1 });
     expect(store.saveLocalizedSegmentUserRevision(runId, sourceSegmentId, "owner-hash", "Kullanıcı metni")).toMatchObject({ revision: 2 });
     const job = store.queueTranslationRegeneration(runId, sourceSegmentId, "owner-hash");
     expect(job).toEqual(expect.any(String));
     expect(store.claimNextTranslationRegenerationJob("worker", 30_000)).toMatchObject({ id: job, runId, sourceSegmentId });
-    expect(store.saveTranslationRegenerationResult(job!, { ...providerResult, translatedText: "Merhaba orada" })).toMatchObject({
+    expect(store.saveTranslationRegenerationResult(job!, "worker", { ...providerResult, translatedText: "Merhaba orada" })).toMatchObject({
       status: "completed",
       revision: 3,
       activeRevisionPreserved: true,
