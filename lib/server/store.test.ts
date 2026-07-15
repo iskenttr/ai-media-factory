@@ -3,6 +3,7 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -67,7 +68,7 @@ describe("AnalysisStore", () => {
   });
 
   async function waitForFile(filePath: string) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
       try {
         await access(filePath);
         return;
@@ -97,6 +98,30 @@ describe("AnalysisStore", () => {
       child.on("close", (code) => {
         if (code === 0) resolve(stdout.trim());
         else reject(new Error(`Verification process exited ${code}: ${stderr}`));
+      });
+    });
+  }
+
+  function runTranslationProcess(
+    runnerPath: string,
+    databasePath: string,
+    runId: string,
+    inputPath: string,
+    readyPath: string,
+    gatePath: string,
+  ) {
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "--import", "tsx", runnerPath, databasePath, runId, inputPath, readyPath, gatePath,
+      ], { cwd: process.cwd() });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) resolve(stdout.trim());
+        else reject(new Error(`Translation process exited ${code}: ${stderr}`));
       });
     });
   }
@@ -242,6 +267,51 @@ describe("AnalysisStore", () => {
     return store.queueVideoRender(runId, "owner-hash")!;
   }
 
+  function createPendingLocalization() {
+    const jobId = createJob();
+    const languageEvent = store.appendEvent(jobId, 1, "language_detected", {
+      availability: "available", language: { code: "en", name: "English" },
+    }, `${jobId}:1:language_detected`);
+    const transcriptId = store.saveSourceTranscript({
+      jobId,
+      attempt: 1,
+      sourceEventId: languageEvent.eventId,
+      speech: {
+        transcript: "Hello",
+        segments: [{ startSeconds: 0, endSeconds: 2, text: "Hello" }],
+        language: { code: "en", name: "English" },
+        providerId: "test-provider",
+        providerVersion: "1",
+      },
+    });
+    const projectId = store.ensureLocalizationProject(jobId, transcriptId);
+    store.completeJob(jobId, "ready");
+    store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
+    store.prepareLocalizationSetup(projectId);
+    const runId = store.createLocalizationRun(projectId);
+    const sourceSegmentId = store.getStudioProjectForOwner(jobId, "owner-hash")!.segments[0].id;
+    const providerResult = {
+      availability: "available" as const,
+      translatedText: "Merhaba",
+      providerVersion: "test-provider-v1",
+      sourceSegmentId,
+      targetLanguage: { code: "tr", name: "Turkish" },
+      translationNotes: [],
+      timingAssessment: {
+        originalDurationMs: 2000,
+        translatedCharacterCount: 7,
+        translatedWordCount: 1,
+        estimatedSpeakingDurationMs: 430,
+        status: "fits" as const,
+        methodVersion: "test",
+        reason: "Fits",
+      },
+      failureReason: null,
+      provenance: { contextSnapshotId: "snapshot", inputFingerprint: "input", resultFingerprint: "result" },
+    };
+    return { jobId, runId, sourceSegmentId, providerResult };
+  }
+
   it("persists ordered events idempotently", () => {
     const jobId = createJob();
     const first = store.appendEvent(
@@ -340,6 +410,110 @@ describe("AnalysisStore", () => {
 
   it("returns no video render when the queue is empty", () => {
     expect(store.claimNextVideoRender("render-worker", 30_000)).toBeNull();
+  });
+
+  it("heals a legacy provider result whose segment activation was interrupted", () => {
+    const { runId, sourceSegmentId, providerResult } = createPendingLocalization();
+    const database = new DatabaseSync(path.join(directory, "events.sqlite"));
+    database.prepare(`
+      INSERT INTO translation_provider_results (id, run_id, source_segment_id, availability, result_json, created_at)
+      VALUES ('legacy-result', ?, ?, 'available', ?, ?)
+    `).run(runId, sourceSegmentId, JSON.stringify(providerResult), new Date().toISOString());
+    database.close();
+
+    expect(store.saveTranslationProviderResult(runId, providerResult)).toEqual({ status: "translated", revision: 1 });
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      status: "translated",
+      translatedText: "Merhaba",
+      revision: 1,
+      revisionOrigin: "provider",
+    });
+  });
+
+  it("serializes two-store provider result attempts into one result and one provider revision", async () => {
+    const { runId, providerResult } = createPendingLocalization();
+    const databasePath = path.join(directory, "events.sqlite");
+    const runnerPath = path.join(directory, "translation-runner.ts");
+    const inputPath = path.join(directory, "translation-result.json");
+    const gatePath = path.join(directory, "translation-gate");
+    const readyPaths = [path.join(directory, "translation-ready-1"), path.join(directory, "translation-ready-2")];
+    const storeModuleUrl = pathToFileURL(path.resolve("lib/server/store.ts")).href;
+    await writeFile(inputPath, JSON.stringify(providerResult));
+    await writeFile(runnerPath, `
+      import { existsSync, readFileSync, writeFileSync } from "node:fs";
+      import { AnalysisStore } from ${JSON.stringify(storeModuleUrl)};
+      async function main() {
+        const [databasePath, runId, inputPath, readyPath, gatePath] = process.argv.slice(2);
+        writeFileSync(readyPath, "ready");
+        while (!existsSync(gatePath)) await new Promise((resolve) => setTimeout(resolve, 5));
+        const store = new AnalysisStore(databasePath);
+        try {
+          console.log(JSON.stringify(store.saveTranslationProviderResult(runId, JSON.parse(readFileSync(inputPath, "utf8")))));
+        } finally {
+          store.close();
+        }
+      }
+      main().catch((error) => { console.error(error); process.exitCode = 1; });
+    `);
+    const attempts = readyPaths.map((readyPath) => runTranslationProcess(
+      runnerPath, databasePath, runId, inputPath, readyPath, gatePath,
+    ));
+    await Promise.all(readyPaths.map(waitForFile));
+    await writeFile(gatePath, "go");
+
+    expect(await Promise.all(attempts)).toEqual([
+      JSON.stringify({ status: "translated", revision: 1 }),
+      JSON.stringify({ status: "translated", revision: 1 }),
+    ]);
+    const database = new DatabaseSync(databasePath);
+    expect(database.prepare(`SELECT COUNT(*) AS count FROM translation_provider_results WHERE run_id = ?`).get(runId)).toMatchObject({ count: 1 });
+    expect(database.prepare(`SELECT COUNT(*) AS count FROM translation_revisions WHERE origin = 'provider'`).get()).toMatchObject({ count: 1 });
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count FROM localized_segments ls
+      JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+      JOIN translation_revisions tr ON tr.id = ls.active_revision_id
+      WHERE lt.run_id = ? AND tr.origin = 'provider'
+    `).get(runId)).toMatchObject({ count: 1 });
+    database.close();
+  });
+
+  it("rolls back the provider result and revision when segment activation fails", () => {
+    const { runId, providerResult } = createPendingLocalization();
+    const databasePath = path.join(directory, "events.sqlite");
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TRIGGER inject_translation_activation_failure
+      BEFORE UPDATE ON localized_segments
+      WHEN NEW.status = 'translated'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected_translation_activation_failure');
+      END;
+    `);
+    database.close();
+
+    expect(() => store.saveTranslationProviderResult(runId, providerResult)).toThrow("injected_translation_activation_failure");
+    const inspection = new DatabaseSync(databasePath);
+    expect(inspection.prepare(`SELECT COUNT(*) AS count FROM translation_provider_results WHERE run_id = ?`).get(runId)).toMatchObject({ count: 0 });
+    expect(inspection.prepare(`SELECT COUNT(*) AS count FROM translation_revisions WHERE origin = 'provider'`).get()).toMatchObject({ count: 0 });
+    expect(inspection.prepare(`
+      SELECT ls.status, ls.active_revision_id FROM localized_segments ls
+      JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id WHERE lt.run_id = ?
+    `).get(runId)).toMatchObject({ status: "pending", active_revision_id: null });
+    inspection.close();
+  });
+
+  it("keeps an active user revision when a provider result arrives", () => {
+    const { runId, sourceSegmentId, providerResult } = createPendingLocalization();
+    expect(store.saveLocalizedSegmentUserRevision(runId, sourceSegmentId, "owner-hash", "Kullanıcı metni"))
+      .toMatchObject({ revision: 1 });
+
+    expect(store.saveTranslationProviderResult(runId, providerResult)).toEqual({ status: "translated", revision: 1 });
+    expect(store.getLocalizationRunForOwner(runId, "owner-hash")?.segments[0]).toMatchObject({
+      translatedText: "Kullanıcı metni",
+      revision: 1,
+      revisionOrigin: "user",
+      revisionCount: 2,
+    });
   });
 
   it("keeps the source transcript immutable while applying versioned user corrections", () => {
