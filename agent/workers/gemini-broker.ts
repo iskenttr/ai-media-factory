@@ -107,6 +107,10 @@ function is429(text: string): boolean {
   return /429|RESOURCE_EXHAUSTED|quota.*exceeded|rate.?limit/i.test(text);
 }
 
+export function isTransientVertexFailure(status: number, text: string) {
+  return status >= 500 || /vertex_non_json_response|temporar(?:y|ily)|backend.*(?:error|unavailable)|bad gateway|service unavailable/i.test(text);
+}
+
 // ---------------------------------------------------------------------------
 // Core request — calls Vertex AI directly with a metadata-server access token,
 // a strict response schema, no tools, and a hard timeout. Both artifacts are
@@ -183,8 +187,18 @@ async function callVertexOnce(
       }),
       signal: controller.signal,
     });
-    const payload = await response.json() as Record<string, unknown>;
-    if (!response.ok) {
+    const responseBody = await response.text();
+    let payload: Record<string, unknown> | undefined;
+    try {
+      payload = JSON.parse(responseBody) as Record<string, unknown>;
+    } catch {
+      status = response.status || 1;
+      stderr = `vertex_non_json_response:${response.status}:${responseBody.replace(/\s+/g, " ").slice(0, 200)}`;
+    }
+    if (!payload) {
+      // A proxy or transient backend may return HTML. Keep only a bounded,
+      // sanitized prefix as evidence; the caller may retry once.
+    } else if (!response.ok) {
       status = response.status;
       stderr = JSON.stringify(payload);
     } else {
@@ -347,18 +361,18 @@ async function _requestGeminiPatch(
 
   const maxRetries = 1; // per task requirement for AUTONOMOUS-SMOKE-002
   let lastError: Error = new Error("gemini_never_attempted");
+  let retryDelayMs = 0;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     if (attempt > 0) {
-      // 60-second cooldown after 429 before retry
       await appendAudit(root, {
         timestamp: new Date().toISOString(),
         taskId,
         category: "model",
         event: "gemini_cooldown_before_retry",
-        detail: { attempt, requestedModel },
+        detail: { attempt, requestedModel, retryDelayMs },
       });
-      await new Promise<void>((resolve) => setTimeout(resolve, 60_000));
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
     }
 
     const callResult = await callVertexOnce(
@@ -397,6 +411,7 @@ async function _requestGeminiPatch(
 
       if (is429(stderr) || is429(stdout)) {
         if (attempt < maxRetries) {
+          retryDelayMs = 60_000;
           lastError = new Error(
             `gemini_rate_limited:attempt_${attempt + 1}_of_${maxRetries + 1}`,
           );
@@ -409,6 +424,16 @@ async function _requestGeminiPatch(
           });
           continue;
         }
+      }
+
+      if (isTransientVertexFailure(status, stderr || stdout) && attempt < maxRetries) {
+        retryDelayMs = 5_000;
+        lastError = new Error(`gemini_transient_failure:attempt_${attempt + 1}_of_${maxRetries + 1}`);
+        await appendAudit(root, {
+          timestamp: new Date().toISOString(), taskId, category: "model", event: "gemini_transient_failure",
+          detail: { attempt, status, durationMs, requestedModel },
+        });
+        continue;
       }
 
       // Non-retryable failure

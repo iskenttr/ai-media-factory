@@ -52,8 +52,7 @@
     "context_paths": [
       "lib/server/video-render-worker.ts",
       "lib/server/store.ts",
-      "lib/server/store.test.ts",
-      "lib/server/config.ts"
+      "lib/server/store.test.ts"
     ],
     "repair_strategy": "gemini_patch_review"
   }

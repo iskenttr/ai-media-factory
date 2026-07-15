@@ -20,6 +20,10 @@ describe("task contract", () => {
   it("rejects attempts to allow policy changes", () => expect(() => validateTaskSafety({ ...valid, allowed_paths: ["agent/policies/**"] })).toThrow("task_allows_globally_forbidden_path"));
   it("rejects excessive budgets", () => expect(() => validateTaskSafety({ ...valid, limits: { ...valid.limits, maximum_iterations: 99 } })).toThrow());
   it("rejects path traversal", () => expect(() => validateTaskSafety({ ...valid, allowed_paths: ["../production/**"] })).toThrow());
+  it("rejects model context outside allowed paths before queue execution", () => expect(() => validateTaskSafety({
+    ...valid,
+    execution: { kind: "gemini_patch", context_paths: ["lib/server/config.ts"], repair_strategy: "none" },
+  })).toThrow("task_context_path_not_allowed:lib/server/config.ts"));
   it("validates every prepared task manifest", async () => {
     const directory = path.join(process.cwd(), "agent/tasks/prepared");
     const files = (await readdir(directory)).filter((file) => file.endsWith(".json"));

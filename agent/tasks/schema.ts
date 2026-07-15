@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertAllowedPath } from "../policies/path-policy";
 
 const safeRelativeGlob = z.string().min(1).refine(
   (value) => !value.startsWith("/") && !value.includes("..") && !value.includes("\\") && value !== "*" && value !== "**" && value !== "**/*",
@@ -59,5 +60,14 @@ export function validateTaskSafety(input: unknown): EngineeringTask {
   const allowed = task.allowed_paths.map((value) => value.replace(/\/\*\*.*$/, ""));
   const violation = allowed.find((path) => globallyForbidden.some((blocked) => path === blocked || path.startsWith(`${blocked}/`) || blocked.startsWith(`${path}/`) || (blocked === ".env" && path.startsWith(".env."))));
   if (violation) throw new Error(`task_allows_globally_forbidden_path:${violation}`);
+  if (task.execution.kind === "gemini_patch") {
+    for (const contextPath of task.execution.context_paths) {
+      try {
+        assertAllowedPath(contextPath, task.allowed_paths, task.forbidden_paths);
+      } catch {
+        throw new Error(`task_context_path_not_allowed:${contextPath}`);
+      }
+    }
+  }
   return task;
 }

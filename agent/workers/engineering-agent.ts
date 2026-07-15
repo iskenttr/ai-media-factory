@@ -60,6 +60,7 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
     rolePrompt,
     "Return JSON only with keys plan:string[], patch:string, rationale:string.",
     "Do not request or execute tools. Produce one unified diff. Do not change policy, production, deployment, credentials, Git configuration, or paths outside allowed_paths.",
+    "Unified diff rules: every changed file must include diff --git, --- and +++ headers; preserve mode 100644 for existing FILE context paths; never mark an existing FILE as /dev/null or new file; edit existing tests in place; use new file mode 100644 only for a genuinely new path; preserve literal backslashes by escaping them correctly in JSON.",
     `TASK: ${task.objective}`,
     `ALLOWED_PATHS: ${task.allowed_paths.join(", ")}`,
     repairContext ? `REPAIR_CONTEXT: ${repairContext.slice(0, 30_000)}` : "INITIAL_IMPLEMENTATION",

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
-import { allowedModelFamilies, extractResponse, isModelAllowed } from "./gemini-broker";
+import { allowedModelFamilies, extractResponse, isModelAllowed, isTransientVertexFailure } from "./gemini-broker";
 
 // ---------------------------------------------------------------------------
 // allowedModelFamilies
@@ -171,4 +171,16 @@ describe("429 pattern detection", () => {
       expect(is429Re.test(p)).toBe(false);
     });
   }
+});
+
+describe("transient Vertex failure detection", () => {
+  it("retries server and non-JSON gateway responses", () => {
+    expect(isTransientVertexFailure(503, "service unavailable")).toBe(true);
+    expect(isTransientVertexFailure(200, "vertex_non_json_response:200:<!DOCTYPE html>")).toBe(true);
+  });
+
+  it("does not retry deterministic client failures", () => {
+    expect(isTransientVertexFailure(400, "invalid argument")).toBe(false);
+    expect(isTransientVertexFailure(403, "permission denied")).toBe(false);
+  });
 });
