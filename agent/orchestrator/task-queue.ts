@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { validateTaskSafety, type EngineeringTask } from "../tasks/schema";
+import { validateTaskSafety, isDevelopmentMode, type EngineeringTask } from "../tasks/schema";
 import { appendAudit } from "./audit-log";
 
 export async function claimNextTask(root: string): Promise<{ task: EngineeringTask; processingFile: string } | null> {
@@ -9,6 +9,7 @@ export async function claimNextTask(root: string): Promise<{ task: EngineeringTa
   await mkdir(queued, { recursive: true });
   await mkdir(processing, { recursive: true });
   const files = (await readdir(queued)).filter((file) => file.endsWith(".json")).sort();
+  const developmentMode = isDevelopmentMode();
   for (const file of files) {
     const source = path.join(queued, file);
     const destination = path.join(processing, file);
@@ -19,7 +20,7 @@ export async function claimNextTask(root: string): Promise<{ task: EngineeringTa
       throw new Error(`task_queue_claim_failed:${file}:${detail}`, { cause: error });
     }
     try {
-      const task = validateTaskSafety(JSON.parse(await readFile(destination, "utf8")));
+      const task = validateTaskSafety(JSON.parse(await readFile(destination, "utf8")), developmentMode);
       if (!task.enabled) {
         await rename(destination, source);
         continue;
@@ -29,7 +30,7 @@ export async function claimNextTask(root: string): Promise<{ task: EngineeringTa
         taskId: task.task_id,
         category: "system",
         event: "task_queue_claimed",
-        detail: { file, source, destination, taskTitle: task.title },
+        detail: { file, source, destination, taskTitle: task.title, developmentMode },
       });
       return { task, processingFile: destination };
     } catch (error) {

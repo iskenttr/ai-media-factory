@@ -1,8 +1,35 @@
 import path from "node:path";
 
+/**
+ * Production-Protected Paths
+ * These paths are forbidden in ALL contexts (development and production).
+ * Access to these paths represents a critical security violation.
+ */
 const GLOBAL_FORBIDDEN = [
-  "deploy", "production", "secrets", "storage", ".git", ".gitmodules", ".env", ".gemini", "agent/policies",
-  "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
+  "deploy",           // Deployment configurations
+  "production",       // Production environment files
+  "secrets",          // Secret management
+  "storage",          // Storage configurations
+  ".git",             // Git repository metadata
+  ".gitmodules",      // Git submodules
+  ".env",             // Environment files (may contain secrets)
+  ".gemini",          // Gemini configuration
+  "agent/policies",   // Policy enforcement code (must not be modified by agent)
+  "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", // Core constitution
+];
+
+/**
+ * Development-Allowed Paths
+ * These paths are allowed for development mode autonomous engineering.
+ * These relaxations do NOT apply to production environments.
+ */
+const DEVELOPMENT_ALLOWED = [
+  "docs/**",          // Documentation files
+  "agent/state/**",   // Runtime state files
+  "agent/reports/**", // Agent reports
+  "artifacts/**",     // Build artifacts
+  "logs/**",          // Log files
+  "worktrees/**",     // Git worktrees
 ];
 
 export function normalizeRepositoryPath(value: string) {
@@ -22,12 +49,18 @@ export function globMatches(glob: string, candidate: string) {
   return normalizedCandidate === normalizedGlob;
 }
 
-export function assertAllowedPath(candidate: string, allowed: string[], forbidden: string[]) {
+export function assertAllowedPath(candidate: string, allowed: string[], forbidden: string[], developmentMode = false) {
   const normalized = normalizeRepositoryPath(candidate);
   const global = GLOBAL_FORBIDDEN.find((entry) => normalized === entry || normalized.startsWith(`${entry}/`) || (entry === ".env" && normalized.startsWith(".env.")));
   if (global) throw new Error(`globally_forbidden_path:${normalized}`);
   if (forbidden.some((glob) => globMatches(glob, normalized))) throw new Error(`task_forbidden_path:${normalized}`);
-  if (!allowed.some((glob) => globMatches(glob, normalized))) throw new Error(`path_not_allowed_by_task:${normalized}`);
+  if (!allowed.some((glob) => globMatches(glob, normalized))) {
+    // In development mode, check if path is in development-allowed paths
+    if (developmentMode && DEVELOPMENT_ALLOWED.some((glob) => globMatches(glob, normalized))) {
+      return normalized;
+    }
+    throw new Error(`path_not_allowed_by_task:${normalized}`);
+  }
   return normalized;
 }
 
@@ -36,4 +69,27 @@ export function assertWithinRoot(root: string, candidate: string) {
   const resolved = path.resolve(candidate);
   if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) throw new Error(`filesystem_path_escape:${candidate}`);
   return resolved;
+}
+
+/**
+ * Check if a path is a test file (development only)
+ */
+export function isTestFile(candidate: string): boolean {
+  const normalized = normalizeRepositoryPath(candidate);
+  return normalized.endsWith(".test.ts") || normalized.endsWith(".test.tsx");
+}
+
+/**
+ * Development mode: allow test file creation
+ */
+export function assertAllowedPathDevelopment(candidate: string, allowed: string[], forbidden: string[]): string {
+  const normalized = normalizeRepositoryPath(candidate);
+  const global = GLOBAL_FORBIDDEN.find((entry) => normalized === entry || normalized.startsWith(`${entry}/`) || (entry === ".env" && normalized.startsWith(".env.")));
+  if (global) throw new Error(`globally_forbidden_path:${normalized}`);
+  if (forbidden.some((glob) => globMatches(glob, normalized))) throw new Error(`task_forbidden_path:${normalized}`);
+  // Allow test files anywhere
+  if (isTestFile(candidate) || allowed.some((glob) => globMatches(glob, normalized))) {
+    return normalized;
+  }
+  throw new Error(`path_not_allowed_by_task:${normalized}`);
 }
