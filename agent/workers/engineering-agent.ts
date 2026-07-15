@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { EngineeringTask } from "../tasks/schema";
 import { assertAllowedPath, assertWithinRoot } from "../policies/path-policy";
@@ -36,6 +36,33 @@ export function normalizeUnifiedDiffHunks(patch: string): string {
   return normalized.endsWith("\n") ? normalized : `${normalized}\n`;
 }
 
+export async function normalizeUnifiedDiffMetadata(patch: string, worktree: string) {
+  const sections = patch.split(/(?=^diff --git )/m);
+  const normalized: string[] = [];
+  for (const section of sections) {
+    const lines = section.split("\n");
+    const header = lines[0]?.match(/^diff --git a\/(.+) b\/(.+)$/);
+    if (!header || header[1] !== header[2]) {
+      normalized.push(section);
+      continue;
+    }
+    const file = header[2];
+    const absolute = assertWithinRoot(worktree, path.join(worktree, file));
+    const existing = await stat(absolute).catch(() => null);
+    const expectedMode = existing && (existing.mode & 0o111) ? "100755" : "100644";
+    const repaired = lines
+      .filter((line) => !(existing && line.startsWith("new file mode ")))
+      .map((line) => {
+        if (existing && line === "--- /dev/null") return `--- a/${file}`;
+        if (line.startsWith("new file mode ")) return `new file mode ${expectedMode}`;
+        if (/^index [0-9a-f]+\.\.[0-9a-f]+ \d+$/.test(line)) return line.replace(/ \d+$/, ` ${expectedMode}`);
+        return line;
+      });
+    normalized.push(repaired.join("\n"));
+  }
+  return normalized.join("");
+}
+
 export async function implementTask(root: string, task: EngineeringTask, worktree: string, artifactDirectory: string, repairContext?: string) {
   if (task.execution.kind === "approval_required") throw new Error("task_requires_human_approval");
   if (task.execution.kind === "controlled_sample") {
@@ -67,7 +94,8 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
     ...context,
   ].join("\n\n");
   const response = await requestGeminiPatch(root, task.task_id, prompt, task.limits.maximum_model_calls, task.limits.maximum_model_tokens);
-  const normalizedPatch = normalizeUnifiedDiffHunks(response.patch);
+  const metadataNormalized = await normalizeUnifiedDiffMetadata(response.patch, worktree);
+  const normalizedPatch = normalizeUnifiedDiffHunks(metadataNormalized);
   const files = patchFiles(normalizedPatch);
   if (!files.length) throw new Error("model_patch_has_no_files");
   for (const file of files) assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
