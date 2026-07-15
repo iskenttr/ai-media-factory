@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-export type ProviderProcessErrorPrefix = "speech_provider" | "translation_provider";
+export type ProviderProcessErrorPrefix = "speaker_provider" | "speech_provider" | "translation_provider";
 type ProviderProcessErrorSuffix = "failed" | "input_failed" | "output_limit_exceeded" | "spawn_failed" | "timeout";
 export type ProviderProcessErrorCode = `${ProviderProcessErrorPrefix}_${ProviderProcessErrorSuffix}`;
 
@@ -17,6 +17,7 @@ export interface ProviderProcessOptions {
   maxOutputBytes: number;
   errorPrefix?: ProviderProcessErrorPrefix;
   inputMode?: "ignore" | "json";
+  env?: NodeJS.ProcessEnv;
 }
 
 function appendBounded(chunks: Buffer[], chunk: Buffer | string, currentBytes: number, maximumBytes: number) {
@@ -49,7 +50,10 @@ export function runBoundedProviderProcess(
   return new Promise<string>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { stdio: [inputMode === "json" ? "pipe" : "ignore", "pipe", "pipe"] });
+      child = spawn(command, args, {
+        env: options.env,
+        stdio: [inputMode === "json" ? "pipe" : "ignore", "pipe", "pipe"],
+      });
     } catch {
       reject(new ProviderProcessError(errorCode("spawn_failed")));
       return;
