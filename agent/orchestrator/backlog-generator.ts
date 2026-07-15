@@ -1,6 +1,105 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { engineeringTaskSchema, type EngineeringTask } from "../tasks/schema";
+
+const MAX_CONTEXT_PATHS = 5;
+const SAFE_MAX_EXECUTION_MS = 1800000; // 30 minutes
+
+/**
+ * Converts glob patterns to safe existing context paths.
+ * Examples: lib/render/**\/\*.ts -> lib/render, workers/**\/\*.ts -> workers
+ */
+export async function resolveContextPaths(
+  allowedPaths: string[],
+  root: string
+): Promise<string[]> {
+  const resolvedPaths = new Set<string>();
+  const seen = new Set<string>();
+
+  for (const allowedPath of allowedPaths) {
+    if (resolvedPaths.size >= MAX_CONTEXT_PATHS) break;
+
+    // Extract the base directory from glob patterns
+    const basePath = extractGlobBase(allowedPath);
+
+    // Resolve to absolute path
+    const absolutePath = path.resolve(root, basePath);
+
+    // Reject path traversal attempts
+    if (!isPathSafe(absolutePath, root)) continue;
+
+    // Check if path exists
+    try {
+      await access(absolutePath);
+    } catch {
+      // Path doesn't exist, skip it
+      continue;
+    }
+
+    // Convert to relative path for the task
+    const relativePath = path.relative(root, absolutePath);
+    const normalized = relativePath.replace(/\\/g, "/"); // Normalize Windows paths
+
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    resolvedPaths.add(normalized);
+  }
+
+  return Array.from(resolvedPaths).slice(0, MAX_CONTEXT_PATHS);
+}
+
+/**
+ * Extracts the base directory from glob patterns.
+ */
+function extractGlobBase(globPath: string): string {
+  // Remove leading slash if present
+  let cleaned = globPath.replace(/^\//, "");
+
+  // Handle recursive globs like **/*.ts or **/*.md
+  if (cleaned.includes("**/")) {
+    // Take everything before /**
+    cleaned = cleaned.split("/**")[0];
+  }
+
+  // Handle simple globs like *.ts or *.json
+  // Take everything before the first glob pattern
+  const globIndex = cleaned.search(/[*?[]/);
+  if (globIndex > 0) {
+    cleaned = cleaned.substring(0, globIndex);
+  }
+
+  // Remove trailing slashes
+  cleaned = cleaned.replace(/\/+$/, "");
+
+  // If empty after cleaning, use the full path
+  return cleaned || globPath;
+}
+
+/**
+ * Validates that a path is safe and within the repository.
+ */
+function isPathSafe(resolvedPath: string, root: string): boolean {
+  const normalizedResolved = path.normalize(resolvedPath);
+  const normalizedRoot = path.normalize(root);
+
+  // Check for path traversal
+  if (normalizedResolved.includes("..")) return false;
+
+  // Ensure path is within root directory
+  return normalizedResolved.startsWith(normalizedRoot);
+}
+
+/**
+ * Check if a suggestion has valid context paths.
+ */
+export async function hasValidContextPaths(
+  allowedPaths: string[],
+  root: string
+): Promise<boolean> {
+  const resolved = await resolveContextPaths(allowedPaths, root);
+  return resolved.length > 0;
+}
 
 /**
  * Priority order for task generation (highest to lowest)
@@ -371,11 +470,17 @@ function generateBranchName(taskId: string): string {
 /**
  * Create a task file from a suggestion
  */
-export function createTaskFromSuggestion(suggestion: TaskSuggestion): EngineeringTask {
+export async function createTaskFromSuggestion(
+  suggestion: TaskSuggestion,
+  root: string
+): Promise<EngineeringTask> {
   const taskId = generateTaskId(suggestion.priority);
   const isHighPriority = ["bug", "reliability", "security"].includes(suggestion.priority);
 
-  // Always use production limits to ensure schema validation passes
+  // Resolve context paths to existing directories
+  const contextPaths = await resolveContextPaths(suggestion.allowedPaths, root);
+
+  // Always use safe execution limits
   const limits = {
     maximum_iterations: 6,
     maximum_changed_files: 25,
@@ -383,7 +488,7 @@ export function createTaskFromSuggestion(suggestion: TaskSuggestion): Engineerin
     maximum_render_attempts: 4,
     maximum_model_calls: 12,
     maximum_model_tokens: 200000,
-    maximum_execution_ms: 7200000,
+    maximum_execution_ms: SAFE_MAX_EXECUTION_MS,
   };
 
   return {
@@ -391,8 +496,8 @@ export function createTaskFromSuggestion(suggestion: TaskSuggestion): Engineerin
     title: suggestion.title,
     priority: isHighPriority ? "high" : "medium",
     objective: suggestion.objective,
-    enabled: false, // Start disabled, agent enables after review
-    allowed_paths: suggestion.allowedPaths,
+    enabled: true, // Tasks are enabled for autonomous execution
+    allowed_paths: suggestion.allowedPaths, // Keep globs for policy enforcement
     forbidden_paths: [
       "**/node_modules/**",
       "**/.git/**",
@@ -412,9 +517,9 @@ export function createTaskFromSuggestion(suggestion: TaskSuggestion): Engineerin
     limits,
     required_artifacts: ["test-report.json"],
     test_commands: suggestion.testCommands,
-    execution: { 
+    execution: {
       kind: "gemini_patch",
-      context_paths: suggestion.allowedPaths.slice(0, 5), // Limit to 5 context paths
+      context_paths: contextPaths, // Use resolved existing paths
       repair_strategy: "none",
     },
   };
@@ -540,12 +645,34 @@ export async function generateBacklogTask(root: string): Promise<{
     return { generated: false, reason: "Daily task limit reached" };
   }
 
-  const taskSuggestion = selectNextTask(state);
-  if (!taskSuggestion) {
-    return { generated: false, reason: "No available tasks (all completed or retried)" };
+  // Find a suggestion with valid context paths
+  let taskSuggestion = selectNextTask(state);
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (attempts < maxAttempts) {
+    if (!taskSuggestion) {
+      return { generated: false, reason: "No available tasks (all completed or retried)" };
+    }
+
+    // Check if suggestion has valid context paths
+    const hasValid = await hasValidContextPaths(taskSuggestion.allowedPaths, root);
+    if (hasValid) {
+      break;
+    }
+
+    // Skip this suggestion and try another
+    const completedTitle = taskSuggestion.title.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    state.completedTaskIds.add(completedTitle);
+    taskSuggestion = selectNextTask(state);
+    attempts++;
   }
 
-  const task = createTaskFromSuggestion(taskSuggestion);
+  if (!taskSuggestion) {
+    return { generated: false, reason: "No available tasks with valid context paths" };
+  }
+
+  const task = await createTaskFromSuggestion(taskSuggestion, root);
   await writeTaskToQueue(root, task);
 
   // Update state

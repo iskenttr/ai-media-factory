@@ -14,6 +14,8 @@ import {
   mustGenerateSourceCodeTask,
   selectNextTask,
   createTaskFromSuggestion,
+  resolveContextPaths,
+  hasValidContextPaths,
   TASK_SUGGESTIONS,
   PRIORITY_ORDER,
   CADENCE,
@@ -251,40 +253,6 @@ describe("Task selection", () => {
   });
 });
 
-describe("Task creation", () => {
-  it("createTaskFromSuggestion creates valid task in development mode", () => {
-    const suggestion = TASK_SUGGESTIONS[0];
-    const task = createTaskFromSuggestion(suggestion);
-    expect(task.task_id).toMatch(/^[A-Z][A-Z0-9-]{2,63}$/);
-    expect(task.title).toBe(suggestion.title);
-    expect(task.objective).toBe(suggestion.objective);
-    expect(task.limits.maximum_iterations).toBe(6); // Production limits
-    expect(task.enabled).toBe(false);
-  });
-
-  it("createTaskFromSuggestion creates valid task in production mode", () => {
-    const suggestion = TASK_SUGGESTIONS[0];
-    const task = createTaskFromSuggestion(suggestion);
-    expect(task.limits.maximum_iterations).toBe(6);
-  });
-
-  it("createTaskFromSuggestion sets high priority for bug/reliability/security", () => {
-    const bugSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "bug");
-    if (bugSuggestion) {
-      const task = createTaskFromSuggestion(bugSuggestion);
-      expect(task.priority).toBe("high");
-    }
-  });
-
-  it("createTaskFromSuggestion sets medium priority for other categories", () => {
-    const perfSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "performance");
-    if (perfSuggestion) {
-      const task = createTaskFromSuggestion(perfSuggestion);
-      expect(task.priority).toBe("medium");
-    }
-  });
-});
-
 describe("Protected branch safety", () => {
   const protectedBranchNames = ["main", "master", "production", "release", "origin/main", "origin/production"];
 
@@ -388,6 +356,41 @@ describe("File system operations", () => {
     await writeFile(path.join(tempDir, "agent/tasks/processing/test.json"), "{}");
     expect(await hasProcessingTasks(tempDir)).toBe(true);
   });
+
+  describe("Task creation", () => {
+    it("createTaskFromSuggestion creates valid task in development mode", async () => {
+      const suggestion = TASK_SUGGESTIONS[0];
+      const task = await createTaskFromSuggestion(suggestion, tempDir);
+      expect(task.task_id).toMatch(/^[A-Z][A-Z0-9-]{2,63}$/);
+      expect(task.title).toBe(suggestion.title);
+      expect(task.objective).toBe(suggestion.objective);
+      expect(task.limits.maximum_iterations).toBe(6);
+      expect(task.enabled).toBe(true);
+      expect(task.limits.maximum_execution_ms).toBe(1800000);
+    });
+
+    it("createTaskFromSuggestion creates valid task in production mode", async () => {
+      const suggestion = TASK_SUGGESTIONS[0];
+      const task = await createTaskFromSuggestion(suggestion, tempDir);
+      expect(task.limits.maximum_iterations).toBe(6);
+    });
+
+    it("createTaskFromSuggestion sets high priority for bug/reliability/security", async () => {
+      const bugSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "bug");
+      if (bugSuggestion) {
+        const task = await createTaskFromSuggestion(bugSuggestion, tempDir);
+        expect(task.priority).toBe("high");
+      }
+    });
+
+    it("createTaskFromSuggestion sets medium priority for other categories", async () => {
+      const perfSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "performance");
+      if (perfSuggestion) {
+        const task = await createTaskFromSuggestion(perfSuggestion, tempDir);
+        expect(task.priority).toBe("medium");
+      }
+    });
+  });
 });
 
 describe("Integration tests", () => {
@@ -400,6 +403,13 @@ describe("Integration tests", () => {
     await mkdir(path.join(tempDir, "agent/tasks/processing"), { recursive: true });
     await mkdir(path.join(tempDir, "agent/tasks/completed"), { recursive: true });
     await mkdir(path.join(tempDir, "agent/tasks/failed"), { recursive: true });
+    // Create directory structure that suggestions expect
+    await mkdir(path.join(tempDir, "app/api"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/subtitle-quality"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/translation"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/render"), { recursive: true });
+    await mkdir(path.join(tempDir, "docs"), { recursive: true });
   });
 
   afterEach(async () => {
@@ -414,6 +424,12 @@ describe("Integration tests", () => {
     expect(result.task).toBeDefined();
     expect(result.task!.task_id).toMatch(/^[A-Z][A-Z0-9-]{2,63}$/);
     expect(result.task!.execution.kind).toBe("gemini_patch");
+    expect(result.task!.enabled).toBe(true);
+    // Verify context_paths are valid (not glob patterns)
+    if (result.task!.execution.kind === "gemini_patch") {
+      expect(result.task!.execution.context_paths.length).toBeGreaterThan(0);
+      expect(result.task!.execution.context_paths.every((p: string) => !p.includes("**"))).toBe(true);
+    }
   });
 
   it("Queue not empty -> nothing generated", async () => {
@@ -442,6 +458,7 @@ describe("Integration tests", () => {
     expect(result.generated).toBe(true);
     expect(result.task).toBeDefined();
     expect(result.task!.execution.kind).toBe("gemini_patch");
+    expect(result.task!.enabled).toBe(true);
   });
 
   it("No eligible task -> safe no-op, not a crash", async () => {
@@ -546,5 +563,144 @@ describe("Integration tests", () => {
     const reloadedState = await loadBacklogState(tempDir);
     const task = selectNextTask(reloadedState);
     expect(task?.title).not.toBe("Add error boundary for API routes");
+  });
+});
+
+describe("Context path resolution", () => {
+  let tempDir: string;
+
+  beforeAll(async () => {
+    tempDir = await mkdtemp(path.join(tmpdir(), "context-paths-"));
+    // Create real directory structure
+    await mkdir(path.join(tempDir, "lib/render"), { recursive: true });
+    await mkdir(path.join(tempDir, "workers"), { recursive: true });
+    await mkdir(path.join(tempDir, "app/api"), { recursive: true });
+    await mkdir(path.join(tempDir, "docs"), { recursive: true });
+    await mkdir(path.join(tempDir, "existing-dir"), { recursive: true });
+    await writeFile(path.join(tempDir, "existing-file.ts"), "// test");
+  });
+
+  afterAll(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  describe("resolveContextPaths", () => {
+    it("recursive glob becomes directory root", async () => {
+      const result = await resolveContextPaths(["lib/render/**/*.ts"], tempDir);
+      expect(result).toContain("lib/render");
+    });
+
+    it("file glob becomes parent directory", async () => {
+      const result = await resolveContextPaths(["app/api/**/*.ts"], tempDir);
+      expect(result).toContain("app/api");
+    });
+
+    it("literal existing file preserved", async () => {
+      const result = await resolveContextPaths(["existing-file.ts"], tempDir);
+      expect(result).toContain("existing-file.ts");
+    });
+
+    it("literal existing directory preserved", async () => {
+      const result = await resolveContextPaths(["existing-dir"], tempDir);
+      expect(result).toContain("existing-dir");
+    });
+
+    it("nonexistent context path rejected", async () => {
+      const result = await resolveContextPaths(["nonexistent/**/*.ts"], tempDir);
+      expect(result).not.toContain("nonexistent");
+    });
+
+    it("path traversal rejected", async () => {
+      const result = await resolveContextPaths(["../outside/**"], tempDir);
+      expect(result).toHaveLength(0);
+    });
+
+    it("duplicate roots removed", async () => {
+      const result = await resolveContextPaths(
+        ["lib/render/**/*.ts", "lib/render/file.ts", "lib/render"],
+        tempDir
+      );
+      const uniqueResult = [...new Set(result)];
+      expect(result.length).toBe(uniqueResult.length);
+    });
+
+    it("maximum 5 context paths enforced", async () => {
+      const manyPaths = [
+        "lib/render/**/*.ts",
+        "workers/**/*.ts",
+        "app/api/**/*.ts",
+        "docs/**/*.md",
+        "existing-dir",
+        "existing-file.ts",
+      ];
+      const result = await resolveContextPaths(manyPaths, tempDir);
+      expect(result.length).toBeLessThanOrEqual(5);
+    });
+
+    it("no valid context -> returns empty array", async () => {
+      const result = await resolveContextPaths(
+        ["nonexistent/**", "also-missing/**"],
+        tempDir
+      );
+      expect(result).toHaveLength(0);
+    });
+
+    it("resolved paths are relative and safe", async () => {
+      const result = await resolveContextPaths(["existing-dir"], tempDir);
+      expect(result[0]).toBe("existing-dir");
+      expect(result[0]).not.toContain(tempDir);
+      expect(result[0]).not.toContain("**");
+      expect(result[0]).not.toContain("..");
+    });
+  });
+
+  describe("hasValidContextPaths", () => {
+    it("returns true for valid paths", async () => {
+      const result = await hasValidContextPaths(["existing-dir"], tempDir);
+      expect(result).toBe(true);
+    });
+
+    it("returns false for all invalid paths", async () => {
+      const result = await hasValidContextPaths(
+        ["nonexistent/**", "missing/**"],
+        tempDir
+      );
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("createTaskFromSuggestion with context paths", () => {
+    it("generated task has valid context_paths for existing directories", async () => {
+      // Create a temp dir with a known structure
+      const testDir = await mkdtemp(path.join(tmpdir(), "task-test-"));
+      await mkdir(path.join(testDir, "lib/subtitle-quality"), { recursive: true });
+
+      const suggestion = TASK_SUGGESTIONS.find(
+        (t) => t.title === "Add tests for SRT parser edge cases"
+      )!;
+
+      const task = await createTaskFromSuggestion(suggestion, testDir);
+      expect(task.enabled).toBe(true);
+      expect(task.limits.maximum_execution_ms).toBe(1800000);
+      if (task.execution.kind === "gemini_patch") {
+        expect(task.execution.context_paths.length).toBeGreaterThan(0);
+        expect(task.execution.context_paths.every((p: string) => !p.includes("**"))).toBe(true);
+      }
+
+      await rm(testDir, { recursive: true, force: true });
+    });
+
+    it("task with no valid context paths has empty context_paths", async () => {
+      const testDir = await mkdtemp(path.join(tmpdir(), "task-test-"));
+
+      const suggestion = TASK_SUGGESTIONS[0];
+      const task = await createTaskFromSuggestion(suggestion, testDir);
+
+      if (task.execution.kind === "gemini_patch") {
+        expect(task.execution.context_paths).toHaveLength(0);
+      }
+
+      await rm(testDir, { recursive: true, force: true });
+    });
   });
 });
