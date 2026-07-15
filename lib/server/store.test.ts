@@ -1,6 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -40,6 +42,158 @@ describe("AnalysisStore", () => {
       verifiedMime: "video/mp4",
     });
   }
+
+  function createPendingUpload(uploadId = "upload-1") {
+    const createdAt = new Date().toISOString();
+    store.createUploadSession({
+      id: uploadId,
+      ownerHash: "owner-hash",
+      uploadTokenHash: "upload-token-hash",
+      fileName: "source.mp4",
+      declaredSize: 1024,
+      declaredMime: "video/mp4",
+      createdAt,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+  }
+
+  const verification = (uploadId = "upload-1") => ({
+    uploadId,
+    sourcePath: path.join(directory, "source.mp4"),
+    actualSize: 1024,
+    sha256: "a".repeat(64),
+    verifiedMime: "video/mp4",
+  });
+
+  async function waitForFile(filePath: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        await access(filePath);
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    throw new Error(`Timed out waiting for ${filePath}`);
+  }
+
+  function runVerificationProcess(
+    runnerPath: string,
+    databasePath: string,
+    sourcePath: string,
+    readyPath: string,
+    gatePath: string,
+  ) {
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "--import", "tsx", runnerPath, databasePath, "upload-1", sourcePath, readyPath, gatePath,
+      ], { cwd: process.cwd() });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) resolve(stdout.trim());
+        else reject(new Error(`Verification process exited ${code}: ${stderr}`));
+      });
+    });
+  }
+
+  it("serializes racing verification attempts into one analysis job", async () => {
+    createPendingUpload();
+    const databasePath = path.join(directory, "events.sqlite");
+    const runnerPath = path.join(directory, "verify-runner.ts");
+    const gatePath = path.join(directory, "verification-gate");
+    const readyPaths = [path.join(directory, "ready-1"), path.join(directory, "ready-2")];
+    const storeModuleUrl = pathToFileURL(path.resolve("lib/server/store.ts")).href;
+    await writeFile(runnerPath, `
+      import { existsSync, writeFileSync } from "node:fs";
+      import { AnalysisStore } from ${JSON.stringify(storeModuleUrl)};
+      async function main() {
+        const [databasePath, uploadId, sourcePath, readyPath, gatePath] = process.argv.slice(2);
+        writeFileSync(readyPath, "ready");
+        while (!existsSync(gatePath)) await new Promise((resolve) => setTimeout(resolve, 5));
+        const store = new AnalysisStore(databasePath);
+        try {
+          console.log(store.verifyUploadAndCreateJob({
+            uploadId, sourcePath, actualSize: 1024, sha256: "a".repeat(64), verifiedMime: "video/mp4",
+          }));
+        } finally {
+          store.close();
+        }
+      }
+      main().catch((error) => { console.error(error); process.exitCode = 1; });
+    `);
+
+    const attempts = readyPaths.map((readyPath, index) => runVerificationProcess(
+      runnerPath,
+      databasePath,
+      path.join(directory, `source-${index + 1}.mp4`),
+      readyPath,
+      gatePath,
+    ));
+    await Promise.all(readyPaths.map(waitForFile));
+    await writeFile(gatePath, "go");
+
+    const [firstJobId, secondJobId] = await Promise.all(attempts);
+    expect(firstJobId).toBe(secondJobId);
+    expect(store.getUploadSession("upload-1")).toMatchObject({
+      status: "verified",
+      jobId: firstJobId,
+    });
+    expect(store.claimNextJob("worker-1", 30_000)?.id).toBe(firstJobId);
+    expect(store.claimNextJob("worker-2", 30_000)).toBeNull();
+  });
+
+  it("returns the authoritative existing job when upload verification is retried", () => {
+    createPendingUpload();
+    const firstJobId = store.verifyUploadAndCreateJob(verification());
+
+    const retryJobId = store.verifyUploadAndCreateJob({
+      ...verification(),
+      sourcePath: path.join(directory, "retry-source.mp4"),
+      sha256: "b".repeat(64),
+    });
+
+    expect(retryJobId).toBe(firstJobId);
+    expect(store.getUploadSession("upload-1")).toMatchObject({
+      status: "verified",
+      jobId: firstJobId,
+      sourcePath: path.join(directory, "source.mp4"),
+      sha256: "a".repeat(64),
+    });
+    expect(store.claimNextJob("worker-1", 30_000)?.id).toBe(firstJobId);
+    expect(store.claimNextJob("worker-2", 30_000)).toBeNull();
+  });
+
+  it("does not create a job for a failed upload", () => {
+    createPendingUpload();
+    store.failUpload("upload-1", "unsupported_media");
+
+    expect(() => store.verifyUploadAndCreateJob(verification())).toThrow(
+      "Upload session is not pending",
+    );
+    expect(store.getUploadSession("upload-1")).toMatchObject({
+      status: "failed",
+      jobId: null,
+      errorCode: "unsupported_media",
+    });
+    expect(store.claimNextJob("worker-1", 30_000)).toBeNull();
+  });
+
+  it("does not downgrade a verified upload when a late verification failure arrives", () => {
+    createPendingUpload();
+    const jobId = store.verifyUploadAndCreateJob(verification());
+
+    store.failUpload("upload-1", "late_retry_failure");
+
+    expect(store.getUploadSession("upload-1")).toMatchObject({
+      status: "verified",
+      jobId,
+      errorCode: null,
+    });
+  });
 
   it("persists ordered events idempotently", () => {
     const jobId = createJob();

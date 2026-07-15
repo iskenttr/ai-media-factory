@@ -498,31 +498,41 @@ export class AnalysisStore {
 
   failUpload(uploadId: string, errorCode: string) {
     this.database
-      .prepare("UPDATE upload_sessions SET status = 'failed', error_code = ? WHERE id = ?")
+      .prepare("UPDATE upload_sessions SET status = 'failed', error_code = ? WHERE id = ? AND status = 'pending'")
       .run(errorCode, uploadId);
   }
 
   verifyUploadAndCreateJob(input: VerifyUploadInput) {
-    const upload = this.getUploadSession(input.uploadId);
-    if (!upload) {
-      throw new Error("Upload session not found");
-    }
-
-    if (upload.status === "verified" && upload.jobId) {
-      return upload.jobId;
-    }
-
-    const jobId = randomUUID();
-    const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
 
     try {
-      this.database
+      const row = this.database
+        .prepare("SELECT * FROM upload_sessions WHERE id = ?")
+        .get(input.uploadId) as DatabaseRow | undefined;
+      if (!row) {
+        throw new Error("Upload session not found");
+      }
+
+      const upload = mapUpload(row);
+      if (upload.status === "verified") {
+        if (!upload.jobId) {
+          throw new Error("Verified upload is missing its analysis job");
+        }
+        this.database.exec("COMMIT");
+        return upload.jobId;
+      }
+      if (upload.status !== "pending") {
+        throw new Error("Upload session is not pending");
+      }
+
+      const jobId = randomUUID();
+      const now = new Date().toISOString();
+      const updated = this.database
         .prepare(`
           UPDATE upload_sessions
           SET status = 'verified', source_path = ?, actual_size = ?, sha256 = ?,
               verified_mime = ?, job_id = ?, error_code = NULL
-          WHERE id = ? AND status = 'pending'
+          WHERE id = ? AND status = 'pending' AND job_id IS NULL
         `)
         .run(
           input.sourcePath,
@@ -532,6 +542,9 @@ export class AnalysisStore {
           jobId,
           input.uploadId,
         );
+      if (updated.changes !== 1) {
+        throw new Error("Upload session verification lost its pending state");
+      }
 
       this.database
         .prepare(`
