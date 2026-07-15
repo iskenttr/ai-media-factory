@@ -286,7 +286,8 @@ describe("AnalysisStore", () => {
       },
     });
     const projectId = store.ensureLocalizationProject(jobId, transcriptId);
-    store.completeJob(jobId, "ready");
+    expect(store.claimNextJob("analysis-worker", 30_000)).toMatchObject({ id: jobId });
+    expect(store.completeJob(jobId, "analysis-worker", "ready")).toBe(true);
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);
