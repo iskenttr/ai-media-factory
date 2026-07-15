@@ -6,6 +6,8 @@ import { runVideoRenderWorkerOnce } from "@/lib/server/video-render-worker";
 import { serverConfig } from "@/lib/server/config";
 import { getAnalysisStore } from "@/lib/server/store";
 
+import { createRoundRobinScheduler } from "./round-robin-scheduler";
+
 let shuttingDown = false;
 
 process.on("SIGINT", () => {
@@ -18,13 +20,16 @@ process.on("SIGTERM", () => {
 
 async function main() {
   const store = getAnalysisStore();
+  const scheduler = createRoundRobinScheduler([
+    () => runWorkerOnce(store),
+    () => runLocalizationWorkerOnce(store),
+    () => runVideoRenderWorkerOnce(store),
+  ]);
   const heartbeat = setInterval(() => store.recordServiceHeartbeat("worker"), 15_000);
   store.recordServiceHeartbeat("worker");
   while (!shuttingDown) {
     // The single-node beta executes at most one CPU-heavy stage at a time.
-    const worked = await runWorkerOnce(store)
-      || await runLocalizationWorkerOnce(store)
-      || await runVideoRenderWorkerOnce(store);
+    const worked = await scheduler.runNext();
     if (!worked) {
       await wait(serverConfig.workerPollMs);
     }
