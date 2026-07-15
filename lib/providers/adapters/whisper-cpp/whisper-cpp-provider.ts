@@ -1,10 +1,15 @@
-import { spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 
 import { z } from "zod";
 
 import type { SpeechAnalysisProvider } from "../../contracts/speech-analysis-provider";
 import { ProviderError } from "../../provider-errors";
+import { serverConfig } from "../../../server/config";
+import {
+  ProviderProcessError,
+  runBoundedProviderProcess,
+  type ProviderProcessOptions,
+} from "../provider-process";
 
 const whisperOutputSchema = z.object({
   result: z.object({ language: z.string().min(2) }).optional(),
@@ -29,26 +34,27 @@ export class WhisperCppSpeechProvider implements SpeechAnalysisProvider {
     private readonly binaryPath: string,
     private readonly modelPath: string,
     private readonly disableGpu = false,
+    private readonly processOptions: ProviderProcessOptions = {
+      timeoutMs: serverConfig.whisperProcessTimeoutMs,
+      killGraceMs: serverConfig.whisperProcessKillGraceMs,
+      maxOutputBytes: serverConfig.whisperProcessMaxOutputBytes,
+      errorPrefix: "speech_provider",
+      inputMode: "ignore",
+    },
   ) {}
 
   async analyze(audioPath: string) {
     const outputPrefix = `${audioPath}.whisper`;
-    await new Promise<void>((resolve, reject) => {
+    try {
       const args = [
         ...(this.disableGpu ? ["--no-gpu"] : []),
         "-m", this.modelPath, "-f", audioPath, "-l", "auto", "-ojf", "-of", outputPrefix,
       ];
-      const process = spawn(this.binaryPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      process.stderr.setEncoding("utf8");
-      process.stderr.on("data", (chunk: string) => (stderr += chunk));
-      process.on("error", (error) => reject(new ProviderError("provider_failure", error.message)));
-      process.on("close", (code) => code === 0
-        ? resolve()
-        : reject(new ProviderError("provider_failure", `whisper.cpp exited with ${code}: ${stderr.slice(-500)}`)));
-    });
-
-    try {
+      await runBoundedProviderProcess(this.binaryPath, args, undefined, {
+        ...this.processOptions,
+        errorPrefix: "speech_provider",
+        inputMode: "ignore",
+      });
       const parsed = whisperOutputSchema.parse(JSON.parse(await readFile(`${outputPrefix}.json`, "utf8")));
       const segments = parsed.transcription
         .map((segment) => {
@@ -71,8 +77,14 @@ export class WhisperCppSpeechProvider implements SpeechAnalysisProvider {
         providerId: this.id,
         providerVersion: this.version,
       };
+    } catch (error) {
+      if (error instanceof ProviderError && error.code === "insufficient_speech") throw error;
+      throw new ProviderError(
+        "provider_failure",
+        error instanceof ProviderProcessError ? error.code : "speech_provider_invalid_response",
+      );
     } finally {
-      await rm(`${outputPrefix}.json`, { force: true });
+      await rm(`${outputPrefix}.json`, { force: true }).catch(() => undefined);
     }
   }
 }

@@ -1,11 +1,8 @@
 import { spawn } from "node:child_process";
 
-export type ProviderProcessErrorCode =
-  | "translation_provider_failed"
-  | "translation_provider_input_failed"
-  | "translation_provider_output_limit_exceeded"
-  | "translation_provider_spawn_failed"
-  | "translation_provider_timeout";
+export type ProviderProcessErrorPrefix = "speech_provider" | "translation_provider";
+type ProviderProcessErrorSuffix = "failed" | "input_failed" | "output_limit_exceeded" | "spawn_failed" | "timeout";
+export type ProviderProcessErrorCode = `${ProviderProcessErrorPrefix}_${ProviderProcessErrorSuffix}`;
 
 export class ProviderProcessError extends Error {
   constructor(readonly code: ProviderProcessErrorCode) {
@@ -18,6 +15,8 @@ export interface ProviderProcessOptions {
   timeoutMs: number;
   killGraceMs: number;
   maxOutputBytes: number;
+  errorPrefix?: ProviderProcessErrorPrefix;
+  inputMode?: "ignore" | "json";
 }
 
 function appendBounded(chunks: Buffer[], chunk: Buffer | string, currentBytes: number, maximumBytes: number) {
@@ -33,29 +32,34 @@ export function runBoundedProviderProcess(
   input: unknown,
   options: ProviderProcessOptions,
 ) {
-  let serializedInput: string;
-  try {
-    const encoded = JSON.stringify(input);
-    if (typeof encoded !== "string") throw new Error("input_not_serializable");
-    serializedInput = encoded;
-  } catch {
-    return Promise.reject(new ProviderProcessError("translation_provider_input_failed"));
+  const errorPrefix = options.errorPrefix ?? "translation_provider";
+  const inputMode = options.inputMode ?? "json";
+  const errorCode = (suffix: ProviderProcessErrorSuffix): ProviderProcessErrorCode => `${errorPrefix}_${suffix}`;
+  let serializedInput: string | undefined;
+  if (inputMode === "json") {
+    try {
+      const encoded = JSON.stringify(input);
+      if (typeof encoded !== "string") throw new Error("input_not_serializable");
+      serializedInput = encoded;
+    } catch {
+      return Promise.reject(new ProviderProcessError(errorCode("input_failed")));
+    }
   }
 
   return new Promise<string>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(command, args, { stdio: [inputMode === "json" ? "pipe" : "ignore", "pipe", "pipe"] });
     } catch {
-      reject(new ProviderProcessError("translation_provider_spawn_failed"));
+      reject(new ProviderProcessError(errorCode("spawn_failed")));
       return;
     }
     const stdin = child.stdin;
     const stdout = child.stdout;
     const stderr = child.stderr;
-    if (!stdin || !stdout || !stderr) {
+    if ((inputMode === "json" && !stdin) || !stdout || !stderr) {
       child.kill("SIGKILL");
-      reject(new ProviderProcessError("translation_provider_spawn_failed"));
+      reject(new ProviderProcessError(errorCode("spawn_failed")));
       return;
     }
     const stdoutChunks: Buffer[] = [];
@@ -69,7 +73,7 @@ export function runBoundedProviderProcess(
     const cleanup = () => {
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
-      stdin.off("error", onInputError);
+      stdin?.off("error", onInputError);
       stdout.off("data", onStdout);
       stderr.off("data", onStderr);
       child.off("error", onError);
@@ -92,34 +96,34 @@ export function runBoundedProviderProcess(
       killTimer.unref();
     };
     function onInputError() {
-      stop("translation_provider_input_failed");
+      stop(errorCode("input_failed"));
     }
     function onStdout(chunk: Buffer) {
       const result = appendBounded(stdoutChunks, chunk, stdoutBytes, options.maxOutputBytes);
       stdoutBytes = result.bytes;
-      if (result.exceeded) stop("translation_provider_output_limit_exceeded");
+      if (result.exceeded) stop(errorCode("output_limit_exceeded"));
     }
     function onStderr(chunk: Buffer) {
       const result = appendBounded(stderrChunks, chunk, stderrBytes, options.maxOutputBytes);
       stderrBytes = result.bytes;
-      if (result.exceeded) stop("translation_provider_output_limit_exceeded");
+      if (result.exceeded) stop(errorCode("output_limit_exceeded"));
     }
     function onError() {
-      finish(new ProviderProcessError("translation_provider_spawn_failed"));
+      finish(new ProviderProcessError(errorCode("spawn_failed")));
     }
     function onClose(code: number | null) {
       if (failureCode) finish(new ProviderProcessError(failureCode));
-      else if (code !== 0) finish(new ProviderProcessError("translation_provider_failed"));
+      else if (code !== 0) finish(new ProviderProcessError(errorCode("failed")));
       else finish();
     }
 
-    stdin.on("error", onInputError);
+    stdin?.on("error", onInputError);
     stdout.on("data", onStdout);
     stderr.on("data", onStderr);
     child.on("error", onError);
     child.on("close", onClose);
-    const timeoutTimer = setTimeout(() => stop("translation_provider_timeout"), options.timeoutMs);
+    const timeoutTimer = setTimeout(() => stop(errorCode("timeout")), options.timeoutMs);
     timeoutTimer.unref();
-    stdin.end(serializedInput);
+    if (inputMode === "json") stdin?.end(serializedInput);
   });
 }
