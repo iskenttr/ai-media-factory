@@ -3,18 +3,19 @@ import { randomUUID } from "node:crypto";
 import type { TimingAssessment, TranslationContextSegment, TranslationProviderResult } from "@/lib/localization/contracts";
 import { LocalProviderRegistry, type ProviderRegistry } from "@/lib/providers/provider-registry";
 
-import { serverConfig } from "./config";
+import { getSpeakingRate, serverConfig } from "./config";
 import { AnalysisStore, getAnalysisStore } from "./store";
 
 function wordCount(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function assessTiming(text: string, startMs: number, endMs: number): TimingAssessment {
+function assessTiming(text: string, startMs: number, endMs: number, languageCode: string = "tr"): TimingAssessment {
   const originalDurationMs = endMs - startMs;
   const translatedWordCount = wordCount(text);
-  // Turkish conversational delivery is conservatively estimated at 140 words per minute.
-  const estimatedSpeakingDurationMs = Math.ceil((translatedWordCount / 140) * 60_000);
+  // Use language-specific speaking rate (default 150 WPM for unknown languages)
+  const speakingRate = getSpeakingRate(languageCode);
+  const estimatedSpeakingDurationMs = Math.ceil((translatedWordCount / speakingRate) * 60_000);
   const ratio = estimatedSpeakingDurationMs / originalDurationMs;
   const status = ratio <= 0.86 ? "fits" as const : ratio <= 1 ? "tight" as const : "overflow" as const;
   return {
@@ -72,7 +73,7 @@ async function translateSegment(
         failureReason: "provider_not_configured", provenance: { contextSnapshotId: input.run.contextSnapshotId, inputFingerprint: "unavailable", resultFingerprint: "unavailable" },
       };
   return base.availability === "available" && base.translatedText
-    ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs) }
+    ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs, input.snapshot.targetLanguage.code) }
     : base;
 }
 
@@ -111,7 +112,7 @@ async function processRun(store: AnalysisStore, runId: string, workerId: string,
             failureReason: "provider_not_configured", provenance: { contextSnapshotId: input.run.contextSnapshotId, inputFingerprint: "unavailable", resultFingerprint: "unavailable" },
           };
       const result = base.availability === "available" && base.translatedText
-        ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs) }
+        ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs, input.snapshot.targetLanguage.code) }
         : base;
       const saved = store.saveTranslationProviderResult(runId, result);
       if (saved.status === "translated") {

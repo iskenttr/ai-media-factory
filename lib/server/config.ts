@@ -19,6 +19,23 @@ export const serverConfig = {
   argosTranslateCommand: process.env.ARGOS_TRANSLATE_COMMAND ?? path.join(projectRoot, "scripts", "argos-translate-docker"),
 } as const;
 
+/**
+ * Speaking rates in words per minute for different languages.
+ * Turkish is set to 140 WPM for conversational delivery.
+ * Override with AMF_TIMING_RATE_TR environment variable.
+ */
+export const timingRates = {
+  tr: Number(process.env.AMF_TIMING_RATE_TR ?? 140),
+} as const;
+
+/**
+ * Get speaking rate for a language code.
+ * Returns default rate of 150 WPM for unknown languages.
+ */
+export function getSpeakingRate(languageCode: string): number {
+  return timingRates[languageCode as keyof typeof timingRates] ?? 150;
+}
+
 export function uploadDirectory(uploadId: string) {
   return path.join(serverConfig.storageRoot, "uploads", uploadId);
 }
