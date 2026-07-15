@@ -1,0 +1,32 @@
+{
+  "task_id": "SQV3-005",
+  "title": "Improve semantic subtitle segmentation",
+  "priority": "high",
+  "objective": "Improve Turkish semantic cue segmentation without inventing text, reducing timing accuracy, crossing speaker boundaries, or weakening deterministic quality limits.",
+  "enabled": false,
+  "allowed_paths": ["lib/subtitle-quality/**"],
+  "forbidden_paths": ["production/**", "deploy/**", "secrets/**", ".git/config", "agent/policies/**", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md", ".env*", "storage/**"],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": true,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 1,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 6,
+    "maximum_changed_files": 12,
+    "maximum_diff_lines": 1800,
+    "maximum_render_attempts": 4,
+    "maximum_model_calls": 6,
+    "maximum_execution_ms": 2400000
+  },
+  "required_artifacts": ["technical-summary.md", "test-report.json", "benchmark-report.json", "quality-report.json", "git-diff.patch"],
+  "test_commands": [["npm", "test", "--", "lib/subtitle-quality"]],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["lib/subtitle-quality/engine.ts", "lib/subtitle-quality/engine.test.ts", "lib/subtitle-quality/v3/evaluator.ts"],
+    "repair_strategy": "gemini_patch_review"
+  }
+}

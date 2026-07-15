@@ -1,0 +1,39 @@
+{
+  "task_id": "RESEARCH-TTS-001",
+  "title": "Research: Turkish TTS and voice cloning options",
+  "priority": "medium",
+  "enabled": false,
+  "objective": "Survey open-source TTS and voice cloning options for Turkish language support as they apply to the AI Media Factory dubbing pipeline. Cover: Coqui XTTS-v2 (explicit Turkish support, MPL-2.0), CosyVoice 2.0 (Apache 2.0, zero-shot, multilingual), F5-TTS (CC-BY-NC-4.0 – flag licensing risk), Kokoro-82M (Apache 2.0, lightweight ONNX). For each: zero-shot voice cloning quality, reference audio length needed, supported languages including Turkish, inference latency on CPU/GPU, license. Recommend a primary and a fallback adapter. Write results to docs/research/RESEARCH-TTS-001.md only.",
+  "allowed_paths": [
+    "docs/research/RESEARCH-TTS-001.md",
+    "SYSTEM_ARCHITECTURE.md",
+    "lib/providers/contracts/speech-analysis-provider.ts"
+  ],
+  "forbidden_paths": [
+    "production", "deploy", "storage", ".env", ".git", "agent/policies", "lib/server", "app", "worker"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": false,
+    "integration_tests_pass": false,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 20,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 20
+  },
+  "limits": {
+    "maximum_iterations": 1,
+    "maximum_changed_files": 1,
+    "maximum_diff_lines": 600,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 2,
+    "maximum_model_tokens": 80000,
+    "maximum_execution_ms": 900000
+  },
+  "required_artifacts": ["technical-summary.md"],
+  "test_commands": [],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["SYSTEM_ARCHITECTURE.md"],
+    "repair_strategy": "none"
+  }
+}

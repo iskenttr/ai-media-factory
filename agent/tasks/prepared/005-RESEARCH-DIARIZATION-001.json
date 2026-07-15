@@ -1,0 +1,39 @@
+{
+  "task_id": "RESEARCH-DIARIZATION-001",
+  "title": "Research: speaker diarization upgrade path from pyannote-community-1",
+  "priority": "medium",
+  "enabled": false,
+  "objective": "Survey speaker diarization options to replace the current pyannote-speaker-diarization-community-1 adapter in AI Media Factory. Compare: pyannote.audio 3.1 (MIT weights CC-BY-4.0, DER ~11-19% on AMI, best open-source balance), DiariZen/BUTSpeechFIT (MIT, WavLM-Large + Conformer, 13.3% DER – leading fully open benchmark), NVIDIA NeMo (Apache 2.0, ~80x realtime with Parakeet-TDT v3, GPU-optimised). For each: DER on standard benchmarks, license, GPU requirements, Python integration complexity, subprocess vs in-process model. Recommend upgrade path and whether to offer a high-accuracy mode selector. Write results to docs/research/RESEARCH-DIARIZATION-001.md only.",
+  "allowed_paths": [
+    "docs/research/RESEARCH-DIARIZATION-001.md",
+    "SYSTEM_ARCHITECTURE.md",
+    "lib/providers/contracts/speaker-analysis-provider.ts"
+  ],
+  "forbidden_paths": [
+    "production", "deploy", "storage", ".env", ".git", "agent/policies", "lib/server", "app", "worker"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": false,
+    "integration_tests_pass": false,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 20,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 20
+  },
+  "limits": {
+    "maximum_iterations": 1,
+    "maximum_changed_files": 1,
+    "maximum_diff_lines": 600,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 2,
+    "maximum_model_tokens": 80000,
+    "maximum_execution_ms": 900000
+  },
+  "required_artifacts": ["technical-summary.md"],
+  "test_commands": [],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": ["SYSTEM_ARCHITECTURE.md", "lib/providers/contracts/speaker-analysis-provider.ts"],
+    "repair_strategy": "none"
+  }
+}

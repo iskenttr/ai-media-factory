@@ -1,0 +1,52 @@
+[Unit]
+Description=AI Media Factory autonomous development orchestrator
+Documentation=file:///opt/ai-media-factory-dev/docs/AGENT_OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathIsDirectory=/opt/ai-media-factory-dev/.git
+ConditionPathExists=/opt/ai-media-factory-dev/docs/AI_MEDIA_FACTORY_CONSTITUTION.md
+
+[Service]
+Type=simple
+User=amf-agent
+Group=amf-agent
+WorkingDirectory=/opt/ai-media-factory-dev
+Environment=AMF_AGENT_ROOT=/opt/ai-media-factory-dev
+Environment=AMF_ENVIRONMENT=development
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/ai-media-factory-agent/agent.env
+UMask=0077
+ExecStartPre=/usr/bin/sha256sum --check --quiet /etc/ai-media-factory-agent/policy.sha256
+ExecStart=/usr/bin/npm run agent:orchestrator
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=90s
+TimeoutStopSec=45s
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+InaccessiblePaths=-/opt/ai-media-factory/current -/var/lib/ai-media-factory -/var/run/docker.sock -/root/.ssh -/home/amf-agent/.ssh -/home/amf-agent/.config/gcloud
+# The broker uses the VM metadata server for keyless Vertex ADC. Commands generated
+# by the model still run in the separate --net unshare namespace with no network.
+TasksMax=256
+MemoryMax=4G
+CPUQuota=300%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-media-factory-agent
+
+[Install]
+WantedBy=multi-user.target
