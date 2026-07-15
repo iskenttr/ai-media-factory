@@ -1,0 +1,60 @@
+{
+  "task_id": "RENDER-LEASE-001",
+  "title": "Renew long-running video render leases safely",
+  "priority": "critical",
+  "objective": "Prevent duplicate long-running video renders by adding owner-checked video-render lease renewal and a bounded heartbeat around renderLocalizedVideo. The heartbeat must start only after a job is claimed, renew at the established worker lease cadence, always stop in finally, never let one worker finish or fail another worker's job, and preserve single-concurrency scheduling and current render acceptance behavior. Add deterministic tests for successful renewal, stale-owner refusal, heartbeat cleanup on success and failure, and no-job behavior. Do not change FFmpeg flags, subtitle decisions, schemas destructively, or production configuration.",
+  "enabled": false,
+  "allowed_paths": [
+    "lib/server/store.ts",
+    "lib/server/store.test.ts",
+    "lib/server/video-render-worker.ts",
+    "lib/server/video-render-worker.test.ts"
+  ],
+  "forbidden_paths": [
+    "production/**",
+    "deploy/**",
+    "secrets/**",
+    ".git/config",
+    "agent/policies/**",
+    "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
+    ".env*",
+    "storage/**"
+  ],
+  "success_criteria": {
+    "unit_tests_pass": true,
+    "integration_tests_pass": true,
+    "render_tests_pass": false,
+    "maximum_critical_errors": 0,
+    "minimum_quality_delta": 0,
+    "maximum_regressions": 0
+  },
+  "limits": {
+    "maximum_iterations": 4,
+    "maximum_changed_files": 4,
+    "maximum_diff_lines": 1000,
+    "maximum_render_attempts": 0,
+    "maximum_model_calls": 4,
+    "maximum_model_tokens": 160000,
+    "maximum_execution_ms": 1200000
+  },
+  "required_artifacts": [
+    "technical-summary.md",
+    "test-report.json",
+    "benchmark-report.json",
+    "quality-report.json",
+    "git-diff.patch"
+  ],
+  "test_commands": [
+    ["npm", "test", "--", "lib/server/store.test.ts", "lib/server/video-render-worker.test.ts"]
+  ],
+  "execution": {
+    "kind": "gemini_patch",
+    "context_paths": [
+      "lib/server/video-render-worker.ts",
+      "lib/server/store.ts",
+      "lib/server/store.test.ts",
+      "lib/server/config.ts"
+    ],
+    "repair_strategy": "gemini_patch_review"
+  }
+}
