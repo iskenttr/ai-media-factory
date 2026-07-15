@@ -142,20 +142,22 @@ export function hasExceededRetryLimit(state: BacklogState, taskTitle: string): b
 }
 
 /**
- * Calculate documentation ratio
+ * Calculate documentation ratio from accepted tasks only
  */
 export function calculateDocumentationRatio(state: BacklogState): number {
-  const recentTasks = state.generatedTasks.slice(-5);
+  const acceptedTasks = state.generatedTasks.filter((t) => t.status === "accepted");
+  const recentTasks = acceptedTasks.slice(-5);
   if (recentTasks.length === 0) return 0;
   const docTasks = recentTasks.filter((t) => t.category === "documentation").length;
   return docTasks / recentTasks.length;
 }
 
 /**
- * Calculate source code ratio
+ * Calculate source code ratio from accepted tasks only
  */
 export function calculateSourceCodeRatio(state: BacklogState): number {
-  const recentTasks = state.generatedTasks.slice(-3);
+  const acceptedTasks = state.generatedTasks.filter((t) => t.status === "accepted");
+  const recentTasks = acceptedTasks.slice(-3);
   if (recentTasks.length === 0) return 1;
   const sourceTasks = recentTasks.filter((t) => t.category === "source_code").length;
   return sourceTasks / recentTasks.length;
@@ -369,19 +371,12 @@ function generateBranchName(taskId: string): string {
 /**
  * Create a task file from a suggestion
  */
-export function createTaskFromSuggestion(suggestion: TaskSuggestion, developmentMode: boolean): EngineeringTask {
+export function createTaskFromSuggestion(suggestion: TaskSuggestion): EngineeringTask {
   const taskId = generateTaskId(suggestion.priority);
   const isHighPriority = ["bug", "reliability", "security"].includes(suggestion.priority);
 
-  const limits = developmentMode ? {
-    maximum_iterations: 10,
-    maximum_changed_files: 50,
-    maximum_diff_lines: 10000,
-    maximum_render_attempts: 4,
-    maximum_model_calls: 20,
-    maximum_model_tokens: 200000,
-    maximum_execution_ms: 3600000,
-  } : {
+  // Always use production limits to ensure schema validation passes
+  const limits = {
     maximum_iterations: 6,
     maximum_changed_files: 25,
     maximum_diff_lines: 2500,
@@ -417,7 +412,11 @@ export function createTaskFromSuggestion(suggestion: TaskSuggestion, development
     limits,
     required_artifacts: ["test-report.json"],
     test_commands: suggestion.testCommands,
-    execution: { kind: "approval_required" },
+    execution: { 
+      kind: "gemini_patch",
+      context_paths: suggestion.allowedPaths.slice(0, 5), // Limit to 5 context paths
+      repair_strategy: "none",
+    },
   };
 }
 
@@ -515,7 +514,7 @@ export async function saveBacklogState(root: string, state: BacklogState): Promi
 /**
  * Main generation function - generates one task when queue is empty
  */
-export async function generateBacklogTask(root: string, developmentMode: boolean = false): Promise<{
+export async function generateBacklogTask(root: string): Promise<{
   generated: boolean;
   task?: EngineeringTask;
   reason?: string;
@@ -546,7 +545,7 @@ export async function generateBacklogTask(root: string, developmentMode: boolean
     return { generated: false, reason: "No available tasks (all completed or retried)" };
   }
 
-  const task = createTaskFromSuggestion(taskSuggestion, developmentMode);
+  const task = createTaskFromSuggestion(taskSuggestion);
   await writeTaskToQueue(root, task);
 
   // Update state
@@ -572,8 +571,7 @@ export async function generateBacklogTask(root: string, developmentMode: boolean
  * Returns the result of generation if triggered
  */
 export async function checkAndGenerateBacklogTask(
-  root: string,
-  developmentMode: boolean = false
+  root: string
 ): Promise<{
   triggered: boolean;
   result?: {
@@ -590,7 +588,7 @@ export async function checkAndGenerateBacklogTask(
     return { triggered: false };
   }
 
-  const result = await generateBacklogTask(root, developmentMode);
+  const result = await generateBacklogTask(root);
   return { triggered: true, result };
 }
 

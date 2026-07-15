@@ -17,6 +17,7 @@ import { writeDashboardSnapshot } from "./dashboard";
 import { numericSetting } from "../policies/limits";
 import { mayAttemptRepair, type RepairObservation } from "../../lib/subtitle-quality/v3";
 import { acceptanceEvidencePassed } from "./acceptance";
+import { checkAndGenerateBacklogTask } from "./backlog-generator";
 
 interface TaskRuntime {
   state: TaskState;
@@ -226,6 +227,17 @@ export async function runOrchestrator(root: string, options: { once: boolean }) 
   try {
     do {
       await writeFile(heartbeat, `${JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString(), idle: true })}\n`, { mode: 0o600 });
+
+      // Generate backlog task if queue is empty and no tasks are processing
+      const generation = await checkAndGenerateBacklogTask(root);
+      if (generation.triggered && generation.result) {
+        await appendAudit(root, {
+          timestamp: new Date().toISOString(), taskId: generation.result.task?.task_id ?? "BACKLOG-GEN", category: "system",
+          event: generation.result.generated ? "backlog_task_generated" : "backlog_generation_skipped",
+          detail: { reason: generation.result.reason, taskTitle: generation.result.task?.title },
+        });
+      }
+
       const claimed = await claimNextTask(root);
       if (claimed) {
         await appendAudit(root, {

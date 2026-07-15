@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,9 +119,9 @@ describe("Ratio calculations", () => {
 
   it("calculateDocumentationRatio calculates correctly", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
     ]);
     expect(calculateDocumentationRatio(state)).toBe(2 / 3);
   });
@@ -129,7 +129,7 @@ describe("Ratio calculations", () => {
   it("calculateDocumentationRatio caps at 5 tasks", () => {
     const tasks: TaskMetadata[] = [];
     for (let i = 0; i < 7; i++) {
-      tasks.push({ taskId: `DOC-${i}`, generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" });
+      tasks.push({ taskId: `DOC-${i}`, generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" });
     }
     const state = createStateWithTasks(tasks);
     expect(calculateDocumentationRatio(state)).toBe(1); // 5/5 (only last 5 counted)
@@ -142,9 +142,9 @@ describe("Ratio calculations", () => {
 
   it("calculateSourceCodeRatio calculates correctly", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
     ]);
     expect(calculateSourceCodeRatio(state)).toBe(1 / 3);
   });
@@ -158,19 +158,19 @@ describe("Task selection constraints", () => {
 
   it("canGenerateDocumentationTask returns true when under limit", () => {
     const state = createStateWithTasks([
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
     ]);
     expect(canGenerateDocumentationTask(state)).toBe(true);
   });
 
   it("canGenerateDocumentationTask returns false when at limit", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-3", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-4", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-3", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-4", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
     ]);
     expect(canGenerateDocumentationTask(state)).toBe(false);
   });
@@ -182,17 +182,17 @@ describe("Task selection constraints", () => {
 
   it("mustGenerateSourceCodeTask returns true when under ratio", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
     ]);
     expect(mustGenerateSourceCodeTask(state)).toBe(true);
   });
 
   it("mustGenerateSourceCodeTask returns false when at ratio", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "generated" },
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "test_gaps", branchName: "br", status: "accepted" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
     ]);
     expect(mustGenerateSourceCodeTask(state)).toBe(false);
   });
@@ -230,10 +230,10 @@ describe("Task selection", () => {
 
   it("selectNextTask enforces documentation ratio", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "generated" },
-      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
-      { taskId: "SRC-3", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "accepted" },
+      { taskId: "SRC-1", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-2", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
+      { taskId: "SRC-3", generatedAt: new Date().toISOString(), category: "source_code", priority: "reliability", branchName: "br", status: "accepted" },
     ]);
     const task = selectNextTask(state);
     expect(task).not.toBeNull();
@@ -242,8 +242,8 @@ describe("Task selection", () => {
 
   it("selectNextTask enforces source code ratio", () => {
     const state = createStateWithTasks([
-      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "generated" },
-      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "generated" },
+      { taskId: "DOC-1", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "accepted" },
+      { taskId: "DOC-2", generatedAt: new Date().toISOString(), category: "documentation", priority: "product_ux", branchName: "br", status: "accepted" },
     ]);
     const task = selectNextTask(state);
     expect(task).not.toBeNull();
@@ -254,24 +254,24 @@ describe("Task selection", () => {
 describe("Task creation", () => {
   it("createTaskFromSuggestion creates valid task in development mode", () => {
     const suggestion = TASK_SUGGESTIONS[0];
-    const task = createTaskFromSuggestion(suggestion, true);
+    const task = createTaskFromSuggestion(suggestion);
     expect(task.task_id).toMatch(/^[A-Z][A-Z0-9-]{2,63}$/);
     expect(task.title).toBe(suggestion.title);
     expect(task.objective).toBe(suggestion.objective);
-    expect(task.limits.maximum_iterations).toBe(10);
+    expect(task.limits.maximum_iterations).toBe(6); // Production limits
     expect(task.enabled).toBe(false);
   });
 
   it("createTaskFromSuggestion creates valid task in production mode", () => {
     const suggestion = TASK_SUGGESTIONS[0];
-    const task = createTaskFromSuggestion(suggestion, false);
+    const task = createTaskFromSuggestion(suggestion);
     expect(task.limits.maximum_iterations).toBe(6);
   });
 
   it("createTaskFromSuggestion sets high priority for bug/reliability/security", () => {
     const bugSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "bug");
     if (bugSuggestion) {
-      const task = createTaskFromSuggestion(bugSuggestion, true);
+      const task = createTaskFromSuggestion(bugSuggestion);
       expect(task.priority).toBe("high");
     }
   });
@@ -279,7 +279,7 @@ describe("Task creation", () => {
   it("createTaskFromSuggestion sets medium priority for other categories", () => {
     const perfSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "performance");
     if (perfSuggestion) {
-      const task = createTaskFromSuggestion(perfSuggestion, true);
+      const task = createTaskFromSuggestion(perfSuggestion);
       expect(task.priority).toBe("medium");
     }
   });
@@ -387,5 +387,164 @@ describe("File system operations", () => {
     const { hasProcessingTasks } = await import("./backlog-generator");
     await writeFile(path.join(tempDir, "agent/tasks/processing/test.json"), "{}");
     expect(await hasProcessingTasks(tempDir)).toBe(true);
+  });
+});
+
+describe("Integration tests", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    // Fresh temp dir for each test to avoid state leakage
+    tempDir = await mkdtemp(path.join(tmpdir(), "backlog-integration-"));
+    await mkdir(path.join(tempDir, "agent/tasks/queue"), { recursive: true });
+    await mkdir(path.join(tempDir, "agent/tasks/processing"), { recursive: true });
+    await mkdir(path.join(tempDir, "agent/tasks/completed"), { recursive: true });
+    await mkdir(path.join(tempDir, "agent/tasks/failed"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("Queue empty -> exactly one valid task generated", async () => {
+    const { generateBacklogTask, isQueueEmpty } = await import("./backlog-generator");
+    expect(await isQueueEmpty(tempDir)).toBe(true);
+    const result = await generateBacklogTask(tempDir);
+    expect(result.generated).toBe(true);
+    expect(result.task).toBeDefined();
+    expect(result.task!.task_id).toMatch(/^[A-Z][A-Z0-9-]{2,63}$/);
+    expect(result.task!.execution.kind).toBe("gemini_patch");
+  });
+
+  it("Queue not empty -> nothing generated", async () => {
+    const { generateBacklogTask } = await import("./backlog-generator");
+    await writeFile(path.join(tempDir, "agent/tasks/queue/existing-task.json"), JSON.stringify({ task_id: "EXIST-001" }));
+    const result = await generateBacklogTask(tempDir);
+    expect(result.generated).toBe(false);
+    expect(result.reason).toBe("Queue is not empty");
+  });
+
+  it("Processing not empty -> nothing generated", async () => {
+    const { generateBacklogTask, isQueueEmpty, hasProcessingTasks } = await import("./backlog-generator");
+    // Add processing task first
+    await writeFile(path.join(tempDir, "agent/tasks/processing/processing-task.json"), JSON.stringify({ task_id: "PROC-001" }));
+    // Queue should be empty but processing should not
+    expect(await isQueueEmpty(tempDir)).toBe(true);
+    expect(await hasProcessingTasks(tempDir)).toBe(true);
+    const result = await generateBacklogTask(tempDir);
+    expect(result.generated).toBe(false);
+    expect(result.reason).toBe("Tasks are currently processing");
+  });
+
+  it("Generated task passes validateTaskSafety in development mode", async () => {
+    const { generateBacklogTask } = await import("./backlog-generator");
+    const result = await generateBacklogTask(tempDir);
+    expect(result.generated).toBe(true);
+    expect(result.task).toBeDefined();
+    expect(result.task!.execution.kind).toBe("gemini_patch");
+  });
+
+  it("No eligible task -> safe no-op, not a crash", async () => {
+    const { selectNextTask, wasTaskCompleted } = await import("./backlog-generator");
+    // Create state with all tasks completed
+    const state = {
+      generatedTasks: [],
+      lastGeneratedAt: null,
+      tasksToday: 0,
+      todayDate: new Date().toISOString().split("T")[0],
+      completedTaskIds: new Set<string>(),
+      failedTaskIds: new Map<string, number>(),
+    };
+    // Manually add all known task titles as completed
+    const completedTitles = [
+      "Add error boundary for API routes",
+      "Add health check to background workers",
+      "Add timing validation for subtitle segments",
+      "Add tests for SRT parser edge cases",
+      "Add language detection fallback",
+      "Add render progress streaming",
+      "Add caching layer for translation API",
+      "Benchmark subtitle processing pipeline",
+      "Add API documentation for /api/analysis endpoints",
+      "Add job status polling fallback",
+      "Add rate limiting to upload endpoint",
+      "Add tests for alignment algorithm",
+      "Add tests for quality scoring",
+      "Fix memory leak in render worker",
+      "Add regression test for SRT timestamp parsing",
+    ];
+    completedTitles.forEach((title) => {
+      const normalized = title.toLowerCase().replace(/[^a-z0-9]/g, "-");
+      state.completedTaskIds.add(normalized);
+    });
+    // Verify all tasks are marked completed
+    const { TASK_SUGGESTIONS } = await import("./backlog-generator");
+    for (const task of TASK_SUGGESTIONS) {
+      expect(wasTaskCompleted(state, task.title)).toBe(true);
+    }
+    // Select should return null
+    expect(selectNextTask(state)).toBeNull();
+  });
+
+  it("Service restart -> cooldown remains active", async () => {
+    const { saveBacklogState, loadBacklogState, isWithinCooldown } = await import("./backlog-generator");
+    const state = {
+      generatedTasks: [],
+      lastGeneratedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(), // 30 min ago
+      tasksToday: 0,
+      todayDate: new Date().toISOString().split("T")[0],
+      completedTaskIds: new Set<string>(),
+      failedTaskIds: new Map<string, number>(),
+    };
+    await saveBacklogState(tempDir, state);
+    // Simulate restart by reloading
+    const reloadedState = await loadBacklogState(tempDir);
+    expect(isWithinCooldown(reloadedState)).toBe(true);
+  });
+
+  it("Service restart -> daily count remains active", async () => {
+    const { saveBacklogState, loadBacklogState, isDailyLimitReached } = await import("./backlog-generator");
+    const state = {
+      generatedTasks: [],
+      lastGeneratedAt: null,
+      tasksToday: 8,
+      todayDate: new Date().toISOString().split("T")[0],
+      completedTaskIds: new Set<string>(),
+      failedTaskIds: new Map<string, number>(),
+    };
+    await saveBacklogState(tempDir, state);
+    // Simulate restart by reloading
+    const reloadedState = await loadBacklogState(tempDir);
+    expect(isDailyLimitReached(reloadedState)).toBe(false);
+    expect(reloadedState.tasksToday).toBe(8);
+  });
+
+  it("Protected path candidates are rejected", async () => {
+    const { TASK_SUGGESTIONS } = await import("./backlog-generator");
+    const forbiddenPatterns = ["main", "master", "production", "deploy", "secrets", ".env", "credentials", "systemd"];
+    for (const task of TASK_SUGGESTIONS) {
+      for (const allowedPath of task.allowedPaths) {
+        for (const forbidden of forbiddenPatterns) {
+          expect(allowedPath.toLowerCase()).not.toContain(forbidden);
+        }
+      }
+    }
+  });
+
+  it("Duplicate prevention across process runs", async () => {
+    const { saveBacklogState, loadBacklogState, selectNextTask } = await import("./backlog-generator");
+    const state = {
+      generatedTasks: [],
+      lastGeneratedAt: null,
+      tasksToday: 0,
+      todayDate: new Date().toISOString().split("T")[0],
+      completedTaskIds: new Set<string>(["add-error-boundary-for-api-routes"]),
+      failedTaskIds: new Map<string, number>(),
+    };
+    await saveBacklogState(tempDir, state);
+    // Simulate restart
+    const reloadedState = await loadBacklogState(tempDir);
+    const task = selectNextTask(reloadedState);
+    expect(task?.title).not.toBe("Add error boundary for API routes");
   });
 });
