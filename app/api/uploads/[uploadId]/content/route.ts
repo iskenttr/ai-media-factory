@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { fileTypeFromFile } from "file-type";
@@ -17,6 +17,33 @@ interface RouteContext {
   params: Promise<{ uploadId: string }>;
 }
 
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+function contentLengthError(request: Request, declaredSize: number) {
+  const header = request.headers.get("content-length");
+  if (header === null) return null;
+  if (!/^\d+$/.test(header)) return "upload_size_mismatch";
+  const contentLength = Number(header);
+  if (!Number.isSafeInteger(contentLength)) return "upload_size_exceeded";
+  if (contentLength > serverConfig.maxUploadBytes || contentLength > declaredSize) return "upload_size_exceeded";
+  return contentLength === declaredSize ? null : "upload_size_mismatch";
+}
+
+async function removeFileIfOwned(filePath: string, identity: FileIdentity | null) {
+  if (!identity) return;
+  try {
+    const current = await lstat(filePath);
+    if (current.dev === identity.dev && current.ino === identity.ino) {
+      await rm(filePath, { force: true });
+    }
+  } catch {
+    // Cleanup is best effort and must not replace the stable upload error.
+  }
+}
+
 export async function PUT(request: Request, context: RouteContext) {
   const { uploadId } = await context.params;
   const store = getAnalysisStore();
@@ -31,6 +58,11 @@ export async function PUT(request: Request, context: RouteContext) {
   }
   if (upload.status !== "pending" || Date.parse(upload.expiresAt) <= Date.now()) {
     return NextResponse.json({ error: "upload_session_expired" }, { status: 410 });
+  }
+  const lengthError = contentLengthError(request, upload.declaredSize);
+  if (lengthError) {
+    store.failUpload(uploadId, lengthError);
+    return NextResponse.json({ error: lengthError }, { status: 422 });
   }
   if (!request.body) {
     return NextResponse.json({ error: "upload_body_required" }, { status: 400 });
@@ -50,8 +82,12 @@ export async function PUT(request: Request, context: RouteContext) {
   }
   const hash = createHash("sha256");
   let actualSize = 0;
+  let fileIdentity: FileIdentity | null = null;
+  let finalSourcePath: string | null = null;
 
   try {
+    const openedFile = await file.stat();
+    fileIdentity = { dev: openedFile.dev, ino: openedFile.ino };
     const reader = request.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -80,6 +116,7 @@ export async function PUT(request: Request, context: RouteContext) {
 
     const sourcePath = path.join(directory, `source.${detectedType.ext}`);
     await rename(temporaryPath, sourcePath);
+    finalSourcePath = sourcePath;
     const jobId = store.verifyUploadAndCreateJob({
       uploadId,
       sourcePath,
@@ -87,11 +124,12 @@ export async function PUT(request: Request, context: RouteContext) {
       sha256: hash.digest("hex"),
       verifiedMime: detectedType.mime,
     });
+    finalSourcePath = null;
 
     return NextResponse.json({ jobId, uploadId }, { status: 201 });
   } catch (error) {
     await file.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true });
+    await removeFileIfOwned(finalSourcePath ?? temporaryPath, fileIdentity);
     const errorCode = error instanceof Error ? error.message : "upload_verification_failed";
     store.failUpload(uploadId, errorCode);
     return NextResponse.json({ error: errorCode }, { status: 422 });
