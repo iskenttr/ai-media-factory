@@ -6,6 +6,12 @@ import { LocalProviderRegistry, type ProviderRegistry } from "@/lib/providers/pr
 import { serverConfig } from "./config";
 import { AnalysisStore, getAnalysisStore } from "./store";
 
+class LocalizationLeaseLost extends Error {
+  constructor() {
+    super("localization_lease_lost");
+  }
+}
+
 function wordCount(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
@@ -42,6 +48,7 @@ async function translateSegment(
   runId: string,
   sourceSegmentId: string,
   providers: ProviderRegistry,
+  assertLease: () => void,
 ): Promise<TranslationProviderResult> {
   const input = store.getLocalizationRunInput(runId);
   if (!input) throw new Error("localization_run_input_unavailable");
@@ -50,6 +57,7 @@ async function translateSegment(
   const segment = input.snapshot.segments[index];
   const nearby = context(input.snapshot.segments, index);
   const provider = await providers.translation();
+  assertLease();
   const base: TranslationProviderResult = provider
     ? await provider.translate({
         projectId: input.snapshot.projectId,
@@ -71,6 +79,7 @@ async function translateSegment(
         targetLanguage: input.snapshot.targetLanguage, translationNotes: [], timingAssessment: null,
         failureReason: "provider_not_configured", provenance: { contextSnapshotId: input.run.contextSnapshotId, inputFingerprint: "unavailable", resultFingerprint: "unavailable" },
       };
+  assertLease();
   return base.availability === "available" && base.translatedText
     ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs) }
     : base;
@@ -79,12 +88,23 @@ async function translateSegment(
 async function processRun(store: AnalysisStore, runId: string, workerId: string, providers: ProviderRegistry) {
   const input = store.getLocalizationRunInput(runId);
   if (!input) throw new Error("localization_run_input_unavailable");
-  const heartbeat = setInterval(
-    () => store.renewLocalizationLease(runId, workerId, serverConfig.workerLeaseMs),
-    Math.max(1_000, Math.floor(serverConfig.workerLeaseMs / 3)),
-  );
+  let ownsLease = true;
+  const renewOwnership = () => {
+    if (!ownsLease) return false;
+    try {
+      ownsLease = store.renewLocalizationLease(runId, workerId, serverConfig.workerLeaseMs);
+    } catch {
+      ownsLease = false;
+    }
+    return ownsLease;
+  };
+  const assertOwnership = () => {
+    if (!renewOwnership()) throw new LocalizationLeaseLost();
+  };
+  const heartbeat = setInterval(renewOwnership, Math.max(1_000, Math.floor(serverConfig.workerLeaseMs / 3)));
   try {
     const provider = await providers.translation();
+    assertOwnership();
     let translated = 0;
     let failed = 0;
     for (const [index, segment] of input.snapshot.segments.entries()) {
@@ -113,7 +133,12 @@ async function processRun(store: AnalysisStore, runId: string, workerId: string,
       const result = base.availability === "available" && base.translatedText
         ? { ...base, timingAssessment: assessTiming(base.translatedText, segment.startMs, segment.endMs) }
         : base;
-      const saved = store.saveTranslationProviderResult(runId, result);
+      assertOwnership();
+      const saved = store.saveTranslationProviderResult(runId, workerId, result);
+      if (!saved) {
+        ownsLease = false;
+        throw new LocalizationLeaseLost();
+      }
       if (saved.status === "translated") {
         translated += 1;
         store.appendLocalizationEvent(runId, "translation_segment_completed", {
@@ -127,7 +152,11 @@ async function processRun(store: AnalysisStore, runId: string, workerId: string,
       }
     }
     const status = translated === input.snapshot.segments.length ? "completed" as const : translated > 0 ? "partial" as const : "failed" as const;
-    store.finishLocalizationRun(runId, status, status === "failed" ? "translation_unavailable" : undefined);
+    assertOwnership();
+    if (!store.finishLocalizationRun(runId, workerId, status, status === "failed" ? "translation_unavailable" : undefined)) {
+      ownsLease = false;
+      throw new LocalizationLeaseLost();
+    }
     store.appendLocalizationEvent(runId, status === "completed" ? "localization_run_completed" : status === "partial" ? "localization_run_partial" : "localization_run_failed", {
       translatedCount: translated, failedCount: failed, totalCount: input.snapshot.segments.length,
     }, `${runId}:${status}`);
@@ -137,13 +166,27 @@ async function processRun(store: AnalysisStore, runId: string, workerId: string,
 }
 
 async function processRegeneration(store: AnalysisStore, jobId: string, runId: string, sourceSegmentId: string, workerId: string, providers: ProviderRegistry) {
-  const heartbeat = setInterval(
-    () => store.renewTranslationRegenerationLease(jobId, workerId, serverConfig.workerLeaseMs),
-    Math.max(1_000, Math.floor(serverConfig.workerLeaseMs / 3)),
-  );
+  let ownsLease = true;
+  const renewOwnership = () => {
+    if (!ownsLease) return false;
+    try {
+      ownsLease = store.renewTranslationRegenerationLease(jobId, workerId, serverConfig.workerLeaseMs);
+    } catch {
+      ownsLease = false;
+    }
+    return ownsLease;
+  };
+  const assertOwnership = () => {
+    if (!renewOwnership()) throw new LocalizationLeaseLost();
+  };
+  const heartbeat = setInterval(renewOwnership, Math.max(1_000, Math.floor(serverConfig.workerLeaseMs / 3)));
   try {
-    const result = await translateSegment(store, runId, sourceSegmentId, providers);
-    store.saveTranslationRegenerationResult(jobId, result);
+    const result = await translateSegment(store, runId, sourceSegmentId, providers, assertOwnership);
+    assertOwnership();
+    if (!store.saveTranslationRegenerationResult(jobId, workerId, result)) {
+      ownsLease = false;
+      throw new LocalizationLeaseLost();
+    }
   } finally {
     clearInterval(heartbeat);
   }
@@ -166,10 +209,18 @@ export async function runLocalizationWorkerOnce(
     try {
       await processRun(store, run.id, workerId, providers);
     } catch (error) {
-      store.finishLocalizationRun(run.id, "failed", "translation_interrupted");
-      store.appendLocalizationEvent(run.id, "localization_run_failed", {
-        reason: error instanceof Error ? error.message : "translation_interrupted",
-      }, `${run.id}:interrupted`);
+      if (error instanceof LocalizationLeaseLost) return true;
+      let renewed = false;
+      try {
+        renewed = store.renewLocalizationLease(run.id, workerId, serverConfig.workerLeaseMs);
+      } catch {
+        renewed = false;
+      }
+      if (renewed && store.finishLocalizationRun(run.id, workerId, "failed", "translation_interrupted")) {
+        store.appendLocalizationEvent(run.id, "localization_run_failed", {
+          reason: error instanceof Error ? error.message : "translation_interrupted",
+        }, `${run.id}:interrupted`);
+      }
     }
     return true;
   }
@@ -178,7 +229,14 @@ export async function runLocalizationWorkerOnce(
   try {
     await processRegeneration(store, regeneration.id, regeneration.runId, regeneration.sourceSegmentId, workerId, providers);
   } catch (error) {
-    store.failTranslationRegenerationJob(regeneration.id, error instanceof Error ? error.message : "translation_interrupted");
+    if (error instanceof LocalizationLeaseLost) return true;
+    let renewed = false;
+    try {
+      renewed = store.renewTranslationRegenerationLease(regeneration.id, workerId, serverConfig.workerLeaseMs);
+    } catch {
+      renewed = false;
+    }
+    if (renewed) store.failTranslationRegenerationJob(regeneration.id, workerId, error instanceof Error ? error.message : "translation_interrupted");
   }
   return true;
 }
