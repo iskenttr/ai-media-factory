@@ -26,9 +26,33 @@
 
 ## Last Verified State
 
-- Published commit containing the application and skill: `3cd9607b95b7255ecec60ac41ad6bb0da1059ace`
+- Published commit: `3cd9607b95b7255ecec60ac41ad6bb0da1059ace`
 - Validation at publication: lint passed, typecheck passed, 62 tests passed, 3 tests skipped, and the Next.js production build passed.
 - Temporary `.codex-*` work directories, migration bundles, patches, generated media, secrets, `.env` files, and `node_modules` are not part of the published repository.
+
+## Autonomous Engineering Progress (2026-07-15)
+
+### Merged PRs on `openhands/autonomous-integration`:
+
+1. **PR #36**: feat: add structured error classification system
+   - Added 35+ typed error codes across 5 domains
+   - Added ErrorSeverity and ErrorCategory enums
+   - Added domain-specific error classes and factory functions
+   - 28 unit tests added
+
+2. **PR #37**: feat: enhance health endpoint with provider checks
+   - Enhanced `/api/health` with database and provider checks
+   - Added latency measurement and status levels (ok/degraded/unavailable)
+   - Provider availability reporting (speech, speakers, translation)
+
+3. **PR #38**: feat: add configurable language-specific timing rates
+   - Added `timingRates` configuration per language
+   - Added `getSpeakingRate()` helper function
+   - Turkish default: 140 WPM, configurable via `AMF_TIMING_RATE_TR`
+   - Default fallback: 150 WPM for unknown languages
+
+### Test Suite Status
+- Total tests: 159 (154 passing, 2 pre-existing FFmpeg failures, 3 skipped)
 
 ## Retrieval Note
 
