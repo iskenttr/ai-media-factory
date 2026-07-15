@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { serverConfig } from "@/lib/server/config";
 import { hashToken, SESSION_COOKIE } from "@/lib/server/security";
 import { getAnalysisStore } from "@/lib/server/store";
-import { encodeServerSentEvent } from "@/lib/server/sse";
+import { encodeServerSentEvent, serverSentEventHeaders, ssePollBackoff } from "@/lib/server/sse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,28 +39,38 @@ export async function GET(request: Request, context: RouteContext) {
 
   const encoder = new TextEncoder();
   const initialLastEventId = request.headers.get("last-event-id");
+  const initialSequence = initialLastEventId ? store.analysisEventSequence(jobId, initialLastEventId) : 0;
   let canceled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       void (async () => {
-        let lastEventId = initialLastEventId;
+        let sequence = initialSequence;
         let lastHeartbeat = Date.now();
+        let idleDelayMs: number = serverConfig.ssePollMs;
 
         try {
           while (!request.signal.aborted && !canceled) {
-            const events = store.listEvents(jobId, lastEventId, job.attempt);
+            const events = store.listEventsAfterSequence(jobId, sequence, job.attempt, serverConfig.sseBatchSize);
             for (const event of events) {
               controller.enqueue(
                 encoder.encode(encodeServerSentEvent(event)),
               );
-              lastEventId = event.eventId;
+              sequence = event.sequence;
             }
 
             if (Date.now() - lastHeartbeat >= serverConfig.sseHeartbeatMs) {
               controller.enqueue(encoder.encode(": keep-alive\n\n"));
               lastHeartbeat = Date.now();
             }
-            await wait(serverConfig.ssePollMs, undefined, { signal: request.signal });
+            const backoff = ssePollBackoff(
+              idleDelayMs,
+              events.length,
+              serverConfig.sseBatchSize,
+              serverConfig.ssePollMs,
+              serverConfig.sseIdleMaxPollMs,
+            );
+            idleDelayMs = backoff.nextIdleMs;
+            if (backoff.waitMs > 0) await wait(backoff.waitMs, undefined, { signal: request.signal });
           }
         } catch (error) {
           if (!request.signal.aborted && !canceled && !(error instanceof DOMException && error.name === "AbortError")) {
@@ -77,11 +87,6 @@ export async function GET(request: Request, context: RouteContext) {
   });
 
   return new Response(stream, {
-    headers: {
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "X-Accel-Buffering": "no",
-    },
+    headers: serverSentEventHeaders,
   });
 }

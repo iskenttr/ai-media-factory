@@ -713,25 +713,39 @@ export class AnalysisStore {
   }
 
   listEvents(jobId: string, afterEventId?: string | null, attempt?: number) {
-    let afterSequence = 0;
-    if (afterEventId) {
-      const row = this.database
-        .prepare("SELECT sequence FROM analysis_events WHERE event_id = ? AND job_id = ?")
-        .get(afterEventId, jobId) as DatabaseRow | undefined;
-      afterSequence = row ? Number(row.sequence) : 0;
-    }
+    const afterSequence = afterEventId ? this.analysisEventSequence(jobId, afterEventId) : 0;
+    const rows = attempt
+      ? (this.database.prepare(`
+          SELECT * FROM analysis_events
+          WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC
+        `).all(jobId, attempt, afterSequence) as DatabaseRow[])
+      : (this.database.prepare(`
+          SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC
+        `).all(jobId, afterSequence) as DatabaseRow[]);
+    return rows.map((row) => this.mapEvent(row));
+  }
+
+  analysisEventSequence(jobId: string, eventId: string) {
+    const row = this.database
+      .prepare("SELECT sequence FROM analysis_events WHERE event_id = ? AND job_id = ?")
+      .get(eventId, jobId) as DatabaseRow | undefined;
+    return row ? Number(row.sequence) : 0;
+  }
+
+  listEventsAfterSequence(jobId: string, afterSequence: number, attempt?: number, limit = 100) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.trunc(limit)));
 
     const rows = attempt
       ? (this.database
           .prepare(
-            "SELECT * FROM analysis_events WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC",
+            "SELECT * FROM analysis_events WHERE job_id = ? AND attempt = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?",
           )
-          .all(jobId, attempt, afterSequence) as DatabaseRow[])
+          .all(jobId, attempt, afterSequence, boundedLimit) as DatabaseRow[])
       : (this.database
           .prepare(
-            "SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC",
+            "SELECT * FROM analysis_events WHERE job_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?",
           )
-          .all(jobId, afterSequence) as DatabaseRow[]);
+          .all(jobId, afterSequence, boundedLimit) as DatabaseRow[]);
     return rows.map((row) => this.mapEvent(row));
   }
 
@@ -1125,10 +1139,23 @@ export class AnalysisStore {
   }
 
   listLocalizationEvents(runId: string, afterEventId?: string | null) {
-    const after = afterEventId
-      ? Number((this.database.prepare(`SELECT sequence FROM localization_events WHERE event_id = ? AND run_id = ?`).get(afterEventId, runId) as DatabaseRow | undefined)?.sequence ?? 0)
-      : 0;
-    return (this.database.prepare(`SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC`).all(runId, after) as DatabaseRow[])
+    const afterSequence = afterEventId ? this.localizationEventSequence(runId, afterEventId) : 0;
+    return (this.database.prepare(`
+      SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC
+    `).all(runId, afterSequence) as DatabaseRow[]).map((row) => this.mapLocalizationEvent(row));
+  }
+
+  localizationEventSequence(runId: string, eventId: string) {
+    const row = this.database.prepare(`SELECT sequence FROM localization_events WHERE event_id = ? AND run_id = ?`)
+      .get(eventId, runId) as DatabaseRow | undefined;
+    return row ? Number(row.sequence) : 0;
+  }
+
+  listLocalizationEventsAfterSequence(runId: string, afterSequence: number, limit = 100) {
+    const boundedLimit = Math.min(500, Math.max(1, Math.trunc(limit)));
+    return (this.database.prepare(`
+      SELECT * FROM localization_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?
+    `).all(runId, afterSequence, boundedLimit) as DatabaseRow[])
       .map((row) => this.mapLocalizationEvent(row));
   }
 
@@ -1452,6 +1479,15 @@ export class AnalysisStore {
       JOIN analysis_jobs j ON j.id = p.job_id WHERE r.id = ? AND j.owner_hash = ?
     `).get(runId, ownerHash) as DatabaseRow | undefined;
     return row ? this.getLocalizationRunData(runId) : null;
+  }
+
+  localizationRunBelongsToOwner(runId: string, ownerHash: string) {
+    return Boolean(this.database.prepare(`
+      SELECT 1 FROM localization_runs r
+      JOIN localization_projects p ON p.id = r.project_id
+      JOIN analysis_jobs j ON j.id = p.job_id
+      WHERE r.id = ? AND j.owner_hash = ?
+    `).get(runId, ownerHash));
   }
 
   queueVideoRender(runId: string, ownerHash: string) {

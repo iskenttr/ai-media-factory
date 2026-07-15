@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { serverConfig } from "@/lib/server/config";
 import { hashToken, SESSION_COOKIE } from "@/lib/server/security";
 import { getAnalysisStore } from "@/lib/server/store";
+import { encodeServerSentEvent, serverSentEventHeaders, ssePollBackoff } from "@/lib/server/sse";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,24 +19,40 @@ function sessionToken(request: Request) {
 export async function GET(request: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
   const token = sessionToken(request);
-  if (!token || !getAnalysisStore().getLocalizationRunForOwner(runId, hashToken(token))) {
+  const store = getAnalysisStore();
+  if (!token || !store.localizationRunBelongsToOwner(runId, hashToken(token))) {
     return NextResponse.json({ error: "localization_run_not_found" }, { status: 404 });
   }
-  const store = getAnalysisStore();
   const encoder = new TextEncoder();
   let canceled = false;
   const initialLastEventId = request.headers.get("last-event-id");
+  const initialSequence = initialLastEventId ? store.localizationEventSequence(runId, initialLastEventId) : 0;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       void (async () => {
-        let lastEventId = initialLastEventId;
+        let sequence = initialSequence;
+        let lastHeartbeat = Date.now();
+        let idleDelayMs: number = serverConfig.ssePollMs;
         try {
           while (!request.signal.aborted && !canceled) {
-            for (const event of store.listLocalizationEvents(runId, lastEventId)) {
-              controller.enqueue(encoder.encode(`id: ${event.eventId}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
-              lastEventId = event.eventId;
+            const events = store.listLocalizationEventsAfterSequence(runId, sequence, serverConfig.sseBatchSize);
+            for (const event of events) {
+              controller.enqueue(encoder.encode(encodeServerSentEvent(event)));
+              sequence = event.sequence;
             }
-            await wait(serverConfig.ssePollMs, undefined, { signal: request.signal });
+            if (Date.now() - lastHeartbeat >= serverConfig.sseHeartbeatMs) {
+              controller.enqueue(encoder.encode(": keep-alive\n\n"));
+              lastHeartbeat = Date.now();
+            }
+            const backoff = ssePollBackoff(
+              idleDelayMs,
+              events.length,
+              serverConfig.sseBatchSize,
+              serverConfig.ssePollMs,
+              serverConfig.sseIdleMaxPollMs,
+            );
+            idleDelayMs = backoff.nextIdleMs;
+            if (backoff.waitMs > 0) await wait(backoff.waitMs, undefined, { signal: request.signal });
           }
         } catch (error) {
           if (!request.signal.aborted && !canceled && !(error instanceof DOMException && error.name === "AbortError")) controller.error(error);
@@ -45,5 +62,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
     },
     cancel() { canceled = true; },
   });
-  return new Response(stream, { headers: { "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "Content-Type": "text/event-stream; charset=utf-8" } });
+  return new Response(stream, { headers: serverSentEventHeaders });
 }

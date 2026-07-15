@@ -342,6 +342,31 @@ describe("AnalysisStore", () => {
     return { jobId, runId, sourceSegmentId, providerResult };
   }
 
+  it("uses bounded sequence cursors for analysis and localization event streams", () => {
+    const { jobId, runId } = createPendingLocalization();
+    store.appendEvent(jobId, 1, "pacing_analysis_completed", {
+      availability: "unavailable", reason: "model_not_configured",
+    }, `${jobId}:1:test-pacing`);
+    const analysisEvents = store.listEvents(jobId);
+    const analysisCursor = analysisEvents[0].sequence;
+    expect(store.analysisEventSequence(jobId, analysisEvents[0].eventId)).toBe(analysisCursor);
+    expect(store.listEventsAfterSequence(jobId, analysisCursor, 1, 1)).toHaveLength(1);
+    expect(store.analysisEventSequence(jobId, "unknown-event")).toBe(0);
+
+    const created = store.listLocalizationEvents(runId)[0];
+    store.appendLocalizationEvent(runId, "translation_segment_completed", { sourceSegmentId: "segment-1" }, `${runId}:test-completed`);
+    store.appendLocalizationEvent(runId, "localization_run_completed", { translatedCount: 1 }, `${runId}:test-run-completed`);
+    expect(store.localizationRunBelongsToOwner(runId, "owner-hash")).toBe(true);
+    expect(store.localizationRunBelongsToOwner(runId, "another-owner")).toBe(false);
+    expect(store.localizationEventSequence(runId, created.eventId)).toBe(created.sequence);
+    const firstBatch = store.listLocalizationEventsAfterSequence(runId, created.sequence, 1);
+    expect(firstBatch).toHaveLength(1);
+    expect(firstBatch[0].sequence).toBe(created.sequence + 1);
+    expect(store.listLocalizationEventsAfterSequence(runId, firstBatch[0].sequence, 1)[0].sequence)
+      .toBe(created.sequence + 2);
+    expect(store.localizationEventSequence(runId, "unknown-event")).toBe(0);
+  });
+
   it("persists ordered events idempotently", () => {
     const jobId = createJob();
     const first = store.appendEvent(

@@ -16,6 +16,8 @@ export const serverConfig = {
   workerLeaseMs: 5 * 60 * 1000,
   workerPollMs: 500,
   ssePollMs: 350,
+  sseIdleMaxPollMs: 2_800,
+  sseBatchSize: 100,
   sseHeartbeatMs: 15_000,
   mediaProbeTimeoutMs: positiveNumber(process.env.AMF_MEDIA_PROBE_TIMEOUT_MS, 30_000),
   mediaFfmpegTimeoutMs: positiveNumber(process.env.AMF_MEDIA_FFMPEG_TIMEOUT_MS, 30 * 60_000),
