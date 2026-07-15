@@ -5,6 +5,8 @@ import path from "node:path";
 import ffmpegStatic from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
+import { serverConfig } from "./config";
+
 const ffmpegPath = process.env.FFMPEG_PATH ?? ffmpegStatic ?? "ffmpeg";
 const ffprobePath = process.env.FFPROBE_PATH ?? ffprobeStatic.path ?? "ffprobe";
 
@@ -38,28 +40,104 @@ export interface AudioSignalAssessment {
   assessment: "strong" | "usable" | "limited";
 }
 
-async function runProcess(command: string, args: string[]) {
+export type MediaProcessStage =
+  | "media_probe"
+  | "audio_extraction"
+  | "audio_signal_assessment"
+  | "representative_frame_extraction";
+
+export class MediaProcessError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "MediaProcessError";
+  }
+}
+
+interface MediaProcessOptions {
+  stage: MediaProcessStage;
+  timeoutMs: number;
+  killGraceMs?: number;
+  maxOutputBytes?: number;
+}
+
+function appendBounded(chunks: Buffer[], chunk: Buffer | string, currentBytes: number, maximumBytes: number) {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const remaining = Math.max(0, maximumBytes - currentBytes);
+  if (remaining > 0) chunks.push(bytes.subarray(0, remaining));
+  return { bytes: currentBytes + Math.min(bytes.length, remaining), exceeded: bytes.length > remaining };
+}
+
+export async function runBoundedMediaProcess(
+  command: string,
+  args: string[],
+  options: MediaProcessOptions,
+) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        reject(new Error(`${path.basename(command)} exited with code ${code}: ${stderr.slice(-800)}`));
-      }
-    });
+    const maximumBytes = options.maxOutputBytes ?? serverConfig.mediaProcessMaxOutputBytes;
+    const killGraceMs = options.killGraceMs ?? serverConfig.mediaProcessKillGraceMs;
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let failureCode: string | null = null;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("error", onError);
+      child.off("close", onClose);
+    };
+    const finish = (error?: MediaProcessError) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve({ stdout: Buffer.concat(stdoutChunks).toString("utf8"), stderr: Buffer.concat(stderrChunks).toString("utf8") });
+    };
+    const stop = (code: string) => {
+      if (failureCode || settled) return;
+      failureCode = code;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, killGraceMs);
+      killTimer.unref();
+    };
+    function onStdout(chunk: Buffer) {
+      const result = appendBounded(stdoutChunks, chunk, stdoutBytes, maximumBytes);
+      stdoutBytes = result.bytes;
+      if (result.exceeded) stop(`${options.stage}_output_limit_exceeded`);
+    }
+    function onStderr(chunk: Buffer) {
+      const result = appendBounded(stderrChunks, chunk, stderrBytes, maximumBytes);
+      stderrBytes = result.bytes;
+      if (result.exceeded) stop(`${options.stage}_output_limit_exceeded`);
+    }
+    function onError() {
+      finish(new MediaProcessError(`${options.stage}_spawn_failed`));
+    }
+    function onClose(code: number | null) {
+      if (failureCode) finish(new MediaProcessError(failureCode));
+      else if (code !== 0) finish(new MediaProcessError(`${options.stage}_failed`));
+      else finish();
+    }
+
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.on("error", onError);
+    child.on("close", onClose);
+    const timeoutTimer = setTimeout(() => stop(`${options.stage}_timeout`), options.timeoutMs);
+    timeoutTimer.unref();
   });
 }
 
 export async function probeMedia(sourcePath: string): Promise<MediaMetadata> {
-  const { stdout } = await runProcess(ffprobePath, [
+  const { stdout } = await runBoundedMediaProcess(ffprobePath, [
     "-v",
     "error",
     "-show_format",
@@ -67,7 +145,7 @@ export async function probeMedia(sourcePath: string): Promise<MediaMetadata> {
     "-of",
     "json",
     sourcePath,
-  ]);
+  ], { stage: "media_probe", timeoutMs: serverConfig.mediaProbeTimeoutMs });
   const output = JSON.parse(stdout) as ProbeOutput;
   const video = output.streams?.find((stream) => stream.codec_type === "video");
   if (!video?.width || !video.height) {
@@ -91,7 +169,7 @@ export async function probeMedia(sourcePath: string): Promise<MediaMetadata> {
 export async function extractAnalysisAudio(sourcePath: string, outputDirectory: string) {
   await mkdir(outputDirectory, { recursive: true });
   const audioPath = path.join(outputDirectory, "analysis-audio.wav");
-  await runProcess(ffmpegPath, [
+  await runBoundedMediaProcess(ffmpegPath, [
     "-y",
     "-i",
     sourcePath,
@@ -103,7 +181,7 @@ export async function extractAnalysisAudio(sourcePath: string, outputDirectory: 
     "-codec:a",
     "pcm_s16le",
     audioPath,
-  ]);
+  ], { stage: "audio_extraction", timeoutMs: serverConfig.mediaFfmpegTimeoutMs });
   return audioPath;
 }
 
@@ -111,7 +189,7 @@ export async function assessAudioSignal(
   sourcePath: string,
   durationMs: number,
 ): Promise<AudioSignalAssessment> {
-  const { stderr } = await runProcess(ffmpegPath, [
+  const { stderr } = await runBoundedMediaProcess(ffmpegPath, [
     "-i",
     sourcePath,
     "-af",
@@ -119,7 +197,7 @@ export async function assessAudioSignal(
     "-f",
     "null",
     "-",
-  ]);
+  ], { stage: "audio_signal_assessment", timeoutMs: serverConfig.mediaFfmpegTimeoutMs });
   const meanVolumeDb = Number(stderr.match(/mean_volume:\s*(-?[\d.]+) dB/)?.[1]);
   const peakVolumeDb = Number(stderr.match(/max_volume:\s*(-?[\d.]+) dB/)?.[1]);
   const silenceDurations = [...stderr.matchAll(/silence_duration:\s*([\d.]+)/g)].map((match) =>
@@ -152,7 +230,7 @@ export async function extractRepresentativeFrames(
 
   for (const [index, position] of positions.entries()) {
     const framePath = path.join(outputDirectory, `frame-${index + 1}.jpg`);
-    await runProcess(ffmpegPath, [
+    await runBoundedMediaProcess(ffmpegPath, [
       "-y",
       "-ss",
       position.toFixed(3),
@@ -165,7 +243,7 @@ export async function extractRepresentativeFrames(
       "-q:v",
       "3",
       framePath,
-    ]);
+    ], { stage: "representative_frame_extraction", timeoutMs: serverConfig.mediaFrameTimeoutMs });
     framePaths.push(framePath);
   }
 

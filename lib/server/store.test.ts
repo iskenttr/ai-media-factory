@@ -239,7 +239,8 @@ describe("AnalysisStore", () => {
       },
     });
     const projectId = store.ensureLocalizationProject(jobId, transcriptId);
-    store.completeJob(jobId, "ready");
+    expect(store.claimNextJob("analysis-worker", 30_000)).toMatchObject({ id: jobId });
+    expect(store.completeJob(jobId, "analysis-worker", "ready")).toBe(true);
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);
@@ -359,7 +360,8 @@ describe("AnalysisStore", () => {
 
   it("creates an isolated new attempt when a job is retried", () => {
     const jobId = createJob();
-    store.failJob(jobId, "provider_unavailable");
+    expect(store.claimNextJob("worker-1", 30_000)).toMatchObject({ id: jobId });
+    expect(store.failJob(jobId, "worker-1", "provider_unavailable")).toBe(true);
 
     expect(store.retryJob(jobId, "owner-hash")).toBe(true);
     const claimed = store.claimNextJob("worker-2", 30_000);
@@ -374,6 +376,32 @@ describe("AnalysisStore", () => {
       id: jobId,
       status: "running",
     });
+  });
+
+  it("completes and fails an analysis job only for its lease owner", () => {
+    const jobId = createJob();
+    expect(store.claimNextJob("worker-1", 30_000)).toMatchObject({ id: jobId });
+    expect(store.completeJob(jobId, "worker-2", "ready")).toBe(false);
+    expect(store.failJob(jobId, "worker-2", "foreign_failure")).toBe(false);
+    expect(store.completeJob(jobId, "worker-1", "ready")).toBe(true);
+    expect(store.failJob(jobId, "worker-1", "late_failure")).toBe(false);
+    expect(store.getJobForOwner(jobId, "owner-hash")).toMatchObject({
+      status: "completed",
+      readiness: "ready",
+    });
+  });
+
+  it("rejects stale analysis ownership after the lease is reclaimed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const jobId = createJob();
+    expect(store.claimNextJob("stale-worker", 1)).toMatchObject({ id: jobId });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.002Z"));
+    expect(store.claimNextJob("current-worker", 30_000)).toMatchObject({ id: jobId });
+    expect(store.renewLease(jobId, "stale-worker", 30_000)).toBe(false);
+    expect(store.completeJob(jobId, "stale-worker", "ready")).toBe(false);
+    expect(store.failJob(jobId, "stale-worker", "stale_failure")).toBe(false);
+    expect(store.failJob(jobId, "current-worker", "current_failure")).toBe(true);
   });
 
   it("renews and completes a video render only for its lease owner", () => {
@@ -535,7 +563,8 @@ describe("AnalysisStore", () => {
       speakerSegments: [{ speakerId: "speaker_2", start: 0, end: 4 }],
     });
     const projectId = store.ensureLocalizationProject(jobId, transcriptId);
-    store.completeJob(jobId, "ready");
+    expect(store.claimNextJob("analysis-worker", 30_000)).toMatchObject({ id: jobId });
+    expect(store.completeJob(jobId, "analysis-worker", "ready")).toBe(true);
     const initial = store.getStudioProjectForOwner(jobId, "owner-hash");
     expect(initial?.segments[0]).toMatchObject({ originalText: "Original line", speakerId: "speaker_2", correctionVersion: 0 });
 
@@ -568,7 +597,8 @@ describe("AnalysisStore", () => {
       speakerSegments: [{ speakerId: "speaker_1", start: 0, end: 2 }],
     });
     const projectId = store.ensureLocalizationProject(jobId, transcriptId);
-    store.completeJob(jobId, "ready");
+    expect(store.claimNextJob("analysis-worker", 30_000)).toMatchObject({ id: jobId });
+    expect(store.completeJob(jobId, "analysis-worker", "ready")).toBe(true);
     store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
     store.prepareLocalizationSetup(projectId);
     const runId = store.createLocalizationRun(projectId);

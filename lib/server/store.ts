@@ -1533,28 +1533,34 @@ export class AnalysisStore {
     return row ? localizationPlanSchema.parse(JSON.parse(String(row.plan_json))) : null;
   }
 
-  completeJob(jobId: string, readiness: "ready" | "limited" | "blocked") {
+  completeJob(
+    jobId: string,
+    workerId: string,
+    readiness: "ready" | "limited" | "blocked",
+  ) {
     const now = new Date().toISOString();
-    this.database
+    const result = this.database
       .prepare(`
         UPDATE analysis_jobs
         SET status = 'completed', readiness = ?, lease_owner = NULL,
             lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
       `)
-      .run(readiness, now, jobId);
+      .run(readiness, now, jobId, workerId);
+    return result.changes === 1;
   }
 
-  failJob(jobId: string, errorCode: string) {
+  failJob(jobId: string, workerId: string, errorCode: string) {
     const now = new Date().toISOString();
-    this.database
+    const result = this.database
       .prepare(`
         UPDATE analysis_jobs
         SET status = 'failed', last_error_code = ?, lease_owner = NULL,
             lease_expires_at = NULL, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'running' AND lease_owner = ?
       `)
-      .run(errorCode, now, jobId);
+      .run(errorCode, now, jobId, workerId);
+    return result.changes === 1;
   }
 
   retryJob(jobId: string, ownerHash: string) {
