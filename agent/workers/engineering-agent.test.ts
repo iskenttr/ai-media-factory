@@ -1,9 +1,9 @@
 // @vitest-environment node
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { normalizeUnifiedDiffHunks, normalizeUnifiedDiffMetadata } from "./engineering-agent";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { normalizeUnifiedDiffHunks, normalizeUnifiedDiffMetadata, isGlobPattern, expandGlobPattern } from "./engineering-agent";
 
 describe("normalizeUnifiedDiffHunks", () => {
   it("repairs model-reported hunk counts without changing content", () => {
@@ -61,5 +61,91 @@ describe("normalizeUnifiedDiffMetadata", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Context path glob expansion", () => {
+  let mockConsoleLog: ReturnType<typeof vi.fn>;
+  let mockConsoleError: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mockConsoleLog = vi.fn();
+    mockConsoleError = vi.fn();
+    vi.stubGlobal("console", {
+      ...console,
+      log: mockConsoleLog,
+      error: mockConsoleError,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe("wildcard context paths", () => {
+    it("expands wildcard pattern into matching files", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "amf-glob-wildcard-"));
+      try {
+        await mkdir(path.join(root, "lib/render/nested"), { recursive: true });
+        await writeFile(path.join(root, "lib/render/file1.ts"), "export const a = 1;");
+        await writeFile(path.join(root, "lib/render/file2.ts"), "export const b = 2;");
+        await writeFile(path.join(root, "lib/render/nested/deep.ts"), "export const c = 3;");
+
+        const results = await expandGlobPattern("lib/render/**/*.ts", root, "TEST-001");
+
+        expect(results).toHaveLength(3);
+        expect(results).toContain("lib/render/file1.ts");
+        expect(results).toContain("lib/render/file2.ts");
+        expect(results).toContain("lib/render/nested/deep.ts");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("handles empty glob matches gracefully", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "amf-glob-empty-"));
+      try {
+        const results = await expandGlobPattern("nonexistent/**/*.ts", root, "TEST-002");
+
+        expect(results).toHaveLength(0);
+        expect(mockConsoleLog).toHaveBeenCalledWith(
+          "[TEST-002] No files matched glob pattern: nonexistent/**/*.ts"
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("literal file paths", () => {
+    it("detects glob patterns vs literal paths", () => {
+      expect(isGlobPattern("lib/specific.ts")).toBe(false);
+      expect(isGlobPattern("lib/**/*.ts")).toBe(true);
+      expect(isGlobPattern("*.ts")).toBe(true);
+      expect(isGlobPattern("[abc].ts")).toBe(true);
+      expect(isGlobPattern("file?.ts")).toBe(true);
+    });
+  });
+
+  describe("mixed wildcard + literal paths", () => {
+    it("processes mixed patterns correctly", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "amf-glob-mixed-"));
+      try {
+        await mkdir(path.join(root, "lib/render"), { recursive: true });
+        await mkdir(path.join(root, "workers"), { recursive: true });
+        await writeFile(path.join(root, "lib/render/render.ts"), "render content");
+        await writeFile(path.join(root, "workers/worker.ts"), "worker content");
+
+        const renderResults = await expandGlobPattern("lib/render/**/*.ts", root, "TEST-004");
+        expect(renderResults).toHaveLength(1);
+        expect(renderResults[0]).toBe("lib/render/render.ts");
+
+        const workerResults = await expandGlobPattern("workers/**/*.ts", root, "TEST-005");
+        expect(workerResults).toHaveLength(1);
+        expect(workerResults[0]).toBe("workers/worker.ts");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   });
 });

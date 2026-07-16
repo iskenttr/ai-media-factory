@@ -1,9 +1,38 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import fg from "fast-glob";
 import type { EngineeringTask } from "../tasks/schema";
 import { assertAllowedPath, assertWithinRoot } from "../policies/path-policy";
 import { applyCandidatePatch } from "./git-gateway";
 import { requestGeminiPatch } from "./gemini-broker";
+
+const GLOB_PATTERN = /[*?[\]]/;
+const MAX_CONTEXT_SIZE = 250_000;
+
+export function isGlobPattern(requested: string): boolean {
+  return GLOB_PATTERN.test(requested);
+}
+
+export async function expandGlobPattern(pattern: string, worktree: string, taskId: string): Promise<string[]> {
+  try {
+    // Join pattern with worktree for absolute path matching
+    const resolvedPattern = path.join(worktree, pattern);
+    const matches = await fg.glob([resolvedPattern], {
+      absolute: true,
+      onlyFiles: true,
+      dot: false,
+    });
+    // Convert absolute paths back to relative paths
+    const relativeMatches = matches.map((m) => path.relative(worktree, m).replace(/\\/g, "/"));
+    if (relativeMatches.length === 0) {
+      console.log(`[${taskId}] No files matched glob pattern: ${pattern}`);
+    }
+    return relativeMatches;
+  } catch (error) {
+    console.error(`[${taskId}] Error expanding glob pattern ${pattern}:`, error);
+    return [];
+  }
+}
 
 function patchFiles(patch: string) {
   return [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]);
@@ -74,11 +103,26 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
   const context: string[] = [];
   let total = 0;
   for (const requested of task.execution.context_paths) {
-    const file = assertAllowedPath(requested, task.allowed_paths, task.forbidden_paths);
-    const content = await readFile(assertWithinRoot(worktree, path.join(worktree, file)), "utf8");
-    total += content.length;
-    if (total > 250_000) throw new Error("model_context_budget_exhausted");
-    context.push(`FILE: ${file}\n${content}`);
+    const files = isGlobPattern(requested)
+      ? await expandGlobPattern(requested, worktree, task.task_id)
+      : [requested];
+
+    for (const file of files) {
+      const validatedFile = assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
+      const absolutePath = assertWithinRoot(worktree, path.join(worktree, validatedFile));
+      try {
+        const content = await readFile(absolutePath, "utf8");
+        total += content.length;
+        if (total > MAX_CONTEXT_SIZE) throw new Error("model_context_budget_exhausted");
+        context.push(`FILE: ${validatedFile}\n${content}`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          console.error(`[${task.task_id}] Context file not found: ${validatedFile}, skipping`);
+        } else {
+          throw error;
+        }
+      }
+    }
   }
   const constitution = await readFile(path.join(root, "docs/AI_MEDIA_FACTORY_CONSTITUTION.md"), "utf8");
   const rolePrompt = await readFile(path.join(root, "agent/prompts/engineering-agent.md"), "utf8");
