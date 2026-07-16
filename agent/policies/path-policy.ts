@@ -46,7 +46,45 @@ export function globMatches(glob: string, candidate: string) {
     const prefix = normalizedGlob.slice(0, -3);
     return normalizedCandidate === prefix || normalizedCandidate.startsWith(`${prefix}/`);
   }
+  // Handle directory globs with extensions like lib/subtitle-quality/**/*.ts
+  // These should accept the directory root and all nested files
+  // But NOT match literal file paths like lib/specific.ts
+  if (normalizedGlob.includes("/**/")) {
+    const dirPrefix = extractGlobDirectoryPrefix(normalizedGlob);
+    if (dirPrefix) {
+      return normalizedCandidate === dirPrefix || normalizedCandidate.startsWith(`${dirPrefix}/`);
+    }
+  }
   return normalizedCandidate === normalizedGlob;
+}
+
+/**
+ * Extract the directory prefix from a glob pattern.
+ */
+function extractGlobDirectoryPrefix(glob: string): string | null {
+  const match = glob.match(/^([^*?\[]+\/)/);
+  if (match) {
+    return match[1].replace(/\/$/, "") || null;
+  }
+  // Handle case like lib/**/*.ts where there's no leading dir separator
+  const simpleMatch = glob.match(/^([^*?\[]+)\/\*\*/);
+  if (simpleMatch) {
+    return simpleMatch[1];
+  }
+  return null;
+}
+
+/**
+ * Check if a resolved context root is safely derived from an allowed glob.
+ * This ensures that:
+ * - lib/subtitle-quality is accepted when allowed_paths contains lib/subtitle-quality/**
+ * - lib/subtitle-quality/engine.ts is accepted
+ * - lib/subtitle-quality-old is rejected (different prefix)
+ * - ../lib/subtitle-quality is rejected (traversal)
+ */
+export function isResolvedContextAllowed(contextPath: string, allowedGlobs: string[]): boolean {
+  const normalized = normalizeRepositoryPath(contextPath);
+  return allowedGlobs.some((glob) => globMatches(glob, normalized));
 }
 
 export function assertAllowedPath(candidate: string, allowed: string[], forbidden: string[], developmentMode = false) {

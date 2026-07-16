@@ -6,7 +6,7 @@ import { writeBenchmarkReports } from "../evaluators/benchmark";
 import { sendCompletionNotification } from "../notifications/email";
 import { inspectDiff } from "../policies/diff-policy";
 import { validateTaskSafety, isDevelopmentMode, type EngineeringTask, type TaskState } from "../tasks/schema";
-import { commitCandidate, createTaskWorktree, inspectWorktree, publishAcceptedCandidate, resolveHead } from "../workers/git-gateway";
+import { cleanupFailedTaskWorktree, commitCandidate, createTaskWorktree, inspectWorktree, publishAcceptedCandidate, resolveHead } from "../workers/git-gateway";
 import { implementTask } from "../workers/engineering-agent";
 import { runQa } from "../workers/qa-agent";
 import { reviewCandidate } from "../workers/security-agent";
@@ -175,6 +175,19 @@ export async function processTask(root: string, task: EngineeringTask, processin
         await transition(root, task.task_id, runtime, target, { reason: message });
       } catch {
         // transition may fail if state is already terminal; still finalize
+      }
+    }
+    // Clean up failed task worktree to prevent VM accumulation
+    if (target === "FAILED" && runtime.worktree !== "not-created") {
+      try {
+        await cleanupFailedTaskWorktree(root, task.task_id, runtime.worktree, runtime.branch);
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        await appendAudit(root, {
+          timestamp: new Date().toISOString(), taskId: task.task_id, category: "system",
+          event: "worktree_cleanup_failed",
+          detail: { error: cleanupMessage },
+        });
       }
     }
     // finalize always moves processingFile to a terminal directory, preventing stale entries.
