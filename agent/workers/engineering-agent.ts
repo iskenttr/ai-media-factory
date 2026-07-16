@@ -108,16 +108,18 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
       : [requested];
 
     for (const file of files) {
-      const validatedFile = assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
-      const absolutePath = assertWithinRoot(worktree, path.join(worktree, validatedFile));
       try {
+        const validatedFile = assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
+        const absolutePath = assertWithinRoot(worktree, path.join(worktree, validatedFile));
         const content = await readFile(absolutePath, "utf8");
         total += content.length;
         if (total > MAX_CONTEXT_SIZE) throw new Error("model_context_budget_exhausted");
         context.push(`FILE: ${validatedFile}\n${content}`);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          console.error(`[${task.task_id}] Context file not found: ${validatedFile}, skipping`);
+          console.error(`[${task.task_id}] Context file not found: ${file}, skipping`);
+        } else if ((error as Error).message.startsWith("path_not_allowed_by_task")) {
+          throw new Error(`task_context_path_not_allowed:${file}`);
         } else {
           throw error;
         }

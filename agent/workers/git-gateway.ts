@@ -127,6 +127,47 @@ async function removeStaleWorktree(root: string, taskId: string, worktreePath: s
   }
 }
 
+/**
+ * Safely remove a task's worktree and branch after finalization.
+ * Unlike removeStaleWorktree, this never throws on dirty state.
+ * It attempts to remove the worktree if clean, and always removes the branch.
+ * Does not delete the main repository or active worktrees.
+ */
+export async function cleanupFailedTaskWorktree(root: string, taskId: string, worktree: string, branch: string): Promise<void> {
+  const status = await worktreeStatus(root, taskId, worktree);
+  if (status !== null) {
+    const dirtyLines = status.split("\n").filter((line) => line.length >= 2 && line[0] !== "?" && line[1] !== "?");
+    if (dirtyLines.length > 0) {
+      // Dirty worktree from failed task – log and leave for inspection
+      await appendAudit(root, {
+        timestamp: new Date().toISOString(), taskId, category: "system",
+        event: "worktree_failed_dirty_left",
+        detail: { worktreePath: worktree, branch, dirtyLines },
+      });
+    } else {
+      // Clean worktree – remove it safely
+      await appendAudit(root, {
+        timestamp: new Date().toISOString(), taskId, category: "system",
+        event: "worktree_failed_clean_removing",
+        detail: { worktreePath: worktree, branch },
+      });
+      await rm(worktree, { recursive: true, force: true });
+      await gitProbe(root, taskId, root, ["worktree", "prune"]);
+    }
+  }
+
+  // Always attempt branch removal (force delete even if not merged)
+  const exists = await branchExists(root, taskId, branch);
+  if (exists) {
+    await appendAudit(root, {
+      timestamp: new Date().toISOString(), taskId, category: "system",
+      event: "branch_failed_removing",
+      detail: { branch },
+    });
+    await git(root, taskId, root, ["branch", "-D", branch]);
+  }
+}
+
 export async function createTaskWorktree(root: string, taskId: string, title: string, baseCommit: string) {
   const branch = `agent/${taskId.toLowerCase()}-${slug(title)}`;
   const worktree = path.join(root, "worktrees", taskId);
