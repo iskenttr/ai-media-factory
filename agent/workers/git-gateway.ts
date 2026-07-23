@@ -29,7 +29,7 @@ async function git(root: string, taskId: string, cwd: string, args: string[]) {
   });
   await appendAudit(root, { timestamp: new Date().toISOString(), taskId, category: "command", event: "git_gateway_command", detail: { args, cwd, exitCode: result.status, durationMs: Date.now() - started } });
   if (result.status !== 0) throw new Error(`git_gateway_failed:${args.join(" ")}:${result.stderr.trim()}`);
-  return result.stdout.trim();
+  return result.stdout.trimEnd();
 }
 
 /** Run git but do NOT throw on non-zero exit; return status + output. Used for probe-only calls. */
