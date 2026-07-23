@@ -6,6 +6,7 @@ import path from "node:path";
  * Access to these paths represents a critical security violation.
  */
 const GLOBAL_FORBIDDEN = [
+  ".github",          // Trusted repository automation and workflow permissions
   "deploy",           // Deployment configurations
   "production",       // Production environment files
   "secrets",          // Secret management

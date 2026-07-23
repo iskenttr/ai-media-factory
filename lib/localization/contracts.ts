@@ -107,4 +107,5 @@ export interface VideoRenderData {
   failureReason: string | null;
   previewUrl: string | null;
   downloadUrl: string | null;
+  qualityUrl: string | null;
 }

@@ -42,8 +42,15 @@ export interface DailyReport {
 }
 
 export interface CostSummary {
+  /** Autonomous Vertex model estimate only; this is not the Cloud invoice. */
   vertexAI: number;
+  /** Deprecated compatibility alias for vertexAI; never present it as total Cloud cost. */
   total: number;
+  modelCommittedUsd?: number;
+  modelReservedUsd?: number;
+  modelLimitUsd?: number;
+  modelCalls?: number;
+  modelRequestLimit?: number;
 }
 
 export interface ErrorReport {

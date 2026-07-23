@@ -16,5 +16,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ rend
     failureReason: render.failureReason,
     previewUrl: render.status === "completed" ? `/api/video-renders/${render.id}/content` : null,
     downloadUrl: render.status === "completed" ? `/api/video-renders/${render.id}/content?download=1` : null,
+    qualityUrl: render.status === "completed" ? `/api/video-renders/${render.id}/quality` : null,
   });
 }

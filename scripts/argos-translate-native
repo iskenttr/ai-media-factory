@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+: "${ARGOS_PYTHON:?ARGOS_PYTHON is required}"
+: "${ARGOS_PACKAGES_DIR:?ARGOS_PACKAGES_DIR is required}"
+
+exec "$ARGOS_PYTHON" \
+  /opt/ai-media-factory-runtime/current/lib/providers/adapters/argos-translate/translate.py

@@ -95,7 +95,7 @@ export type EngineeringTask = z.infer<typeof engineeringTaskSchema>;
 export type TaskState = z.infer<typeof taskStateSchema>;
 
 const globallyForbidden = [
-  "production", "deploy", "secrets", ".git", ".git/config", ".gitmodules", "agent/policies", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
+  "production", "deploy", "secrets", ".github", ".git", ".git/config", ".gitmodules", "agent/policies", "docs/AI_MEDIA_FACTORY_CONSTITUTION.md",
   "storage", ".env", ".gemini",
 ];
 

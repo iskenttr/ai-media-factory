@@ -7,6 +7,7 @@ describe("path policy", () => {
   it("rejects production and policy paths", () => {
     expect(() => assertAllowedPath("production/file", ["**"], [])).toThrow("globally_forbidden_path");
     expect(() => assertAllowedPath("agent/policies/x.ts", ["agent/**"], [])).toThrow("globally_forbidden_path");
+    expect(() => assertAllowedPath(".github/workflows/candidate.yml", [".github/**"], [])).toThrow("globally_forbidden_path");
     expect(() => assertAllowedPath(".env.agent", ["**"], [])).toThrow("globally_forbidden_path");
   });
   it("rejects traversal and absolute paths", () => {

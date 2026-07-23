@@ -21,6 +21,7 @@
     "agent:daily-summary": "tsx scripts/agent-daily-summary.ts",
     "agent:validate-task": "tsx scripts/agent-validate-task.ts",
     "agent:verify-audit": "tsx scripts/agent-verify-audit.ts",
+    "tts:smoke": "tsx scripts/tts-quality-smoke.ts",
     "bot": "tsx src/telegram/bot.ts"
   },
   "dependencies": {

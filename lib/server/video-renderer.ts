@@ -169,7 +169,12 @@ function escapeFilterPath(filePath: string) {
   return filePath.replaceAll("\\", "\\\\").replaceAll(":", "\\:").replaceAll("'", "'\\''").replaceAll(",", "\\,");
 }
 
-export async function renderLocalizedVideo(sourcePath: string, outputPath: string, segments: RenderSubtitle[]) {
+export async function renderLocalizedVideo(
+  sourcePath: string,
+  outputPath: string,
+  segments: RenderSubtitle[],
+  options: { audioPath?: string } = {},
+) {
   if (segments.length === 0) throw new Error("localized_subtitles_unavailable");
   await mkdir(path.dirname(outputPath), { recursive: true });
   const subtitlePath = path.join(path.dirname(outputPath), "localized.ass");
@@ -198,9 +203,16 @@ export async function renderLocalizedVideo(sourcePath: string, outputPath: strin
   if (!passesQualityGate(preRenderMetrics)) throw new Error(`subtitle_quality_gate_failed:${JSON.stringify(preRenderMetrics)}`);
   await writeFile(subtitlePath, createFittedAss(cues, layout), "utf8");
   try {
+    const inputArguments = options.audioPath
+      ? ["-y", "-i", sourcePath, "-i", options.audioPath]
+      : ["-y", "-i", sourcePath];
+    const mappingArguments = options.audioPath
+      ? ["-map", "0:v:0", "-map", "1:a:0"]
+      : [];
     await runProcess(ffmpegPath, [
-      "-y", "-i", sourcePath,
+      ...inputArguments,
       "-vf", `ass=filename='${escapeFilterPath(subtitlePath)}'`,
+      ...mappingArguments,
       "-c:v", "libx264", "-preset", "medium", "-crf", "20",
       "-c:a", "aac", "-b:a", "192k",
       "-movflags", "+faststart", outputPath,

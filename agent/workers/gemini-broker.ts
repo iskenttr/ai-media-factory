@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { appendAudit } from "../orchestrator/audit-log";
@@ -15,7 +16,11 @@ export interface ModelResponse {
 interface ModelUsageEntry {
   taskId: string;
   timestamp: string;
+  entryType?: "reservation" | "settlement";
+  reservationId?: string;
   estimatedPromptTokens?: number;
+  maximumOutputTokens?: number;
+  reservedCostUsd?: number;
   reportedUsage?: Record<string, number> | null;
   estimatedCostUsd?: number;
 }
@@ -25,6 +30,9 @@ export interface DailyModelBudgetStatus {
   calls: number;
   requestLimit: number;
   estimatedCostUsd: number;
+  committedCostUsd: number;
+  reservedCostUsd: number;
+  remainingCostUsd: number;
   costLimitUsd: number;
   exhausted: boolean;
   reason: "daily_model_request_limit_exhausted" | "daily_model_cost_limit_exhausted" | null;
@@ -69,12 +77,27 @@ function summarizeDailyModelBudget(
     5,
   );
   const dailyEntries = entries.filter((entry) => entry.timestamp.startsWith(date));
-  const estimatedCostUsd = dailyEntries.reduce(
-    (sum, entry) => sum + (entry.estimatedCostUsd ?? 0),
-    0,
+  const legacy = dailyEntries.filter((entry) => entry.entryType === undefined);
+  const reservations = dailyEntries.filter((entry) => entry.entryType === "reservation");
+  const settlements = new Map(
+    dailyEntries
+      .filter((entry) => entry.entryType === "settlement" && entry.reservationId)
+      .map((entry) => [entry.reservationId as string, entry]),
   );
+  const legacyCostUsd = legacy.reduce((sum, entry) => sum + (entry.estimatedCostUsd ?? 0), 0);
+  let committedCostUsd = legacyCostUsd;
+  let reservedCostUsd = 0;
+  for (const reservation of reservations) {
+    const settlement = reservation.reservationId
+      ? settlements.get(reservation.reservationId)
+      : undefined;
+    if (settlement) committedCostUsd += settlement.estimatedCostUsd ?? reservation.reservedCostUsd ?? 0;
+    else reservedCostUsd += reservation.reservedCostUsd ?? 0;
+  }
+  const estimatedCostUsd = committedCostUsd + reservedCostUsd;
+  const calls = legacy.length + reservations.length;
   const reason =
-    dailyEntries.length >= requestLimit
+    calls >= requestLimit
       ? "daily_model_request_limit_exhausted"
       : estimatedCostUsd >= costLimitUsd
         ? "daily_model_cost_limit_exhausted"
@@ -82,13 +105,124 @@ function summarizeDailyModelBudget(
 
   return {
     date,
-    calls: dailyEntries.length,
+    calls,
     requestLimit,
     estimatedCostUsd,
+    committedCostUsd,
+    reservedCostUsd,
+    remainingCostUsd: Math.max(0, costLimitUsd - estimatedCostUsd),
     costLimitUsd,
     exhausted: reason !== null,
     reason,
   };
+}
+
+function maximumModelCallCostUsd(estimatedPromptTokens: number, maximumOutputTokens: number) {
+  const inputPrice = numericSetting(
+    process.env.AMF_AGENT_INPUT_USD_PER_MILLION_TOKENS,
+    1.5,
+  );
+  const outputPrice = numericSetting(
+    process.env.AMF_AGENT_OUTPUT_USD_PER_MILLION_TOKENS,
+    9,
+  );
+  return (
+    estimatedPromptTokens * inputPrice +
+    maximumOutputTokens * outputPrice
+  ) / 1_000_000;
+}
+
+function summarizeTaskModelUsage(entries: ModelUsageEntry[], taskId: string) {
+  const taskEntries = entries.filter((entry) => entry.taskId === taskId);
+  const legacy = taskEntries.filter((entry) => entry.entryType === undefined);
+  const reservations = taskEntries.filter((entry) => entry.entryType === "reservation");
+  const settlements = new Map(
+    taskEntries
+      .filter((entry) => entry.entryType === "settlement" && entry.reservationId)
+      .map((entry) => [entry.reservationId as string, entry]),
+  );
+  const legacyTokens = legacy.reduce(
+    (sum, entry) =>
+      sum + (entry.reportedUsage?.total ?? entry.reportedUsage?.totalTokenCount ?? entry.estimatedPromptTokens ?? 0),
+    0,
+  );
+  const reservedTokens = reservations.reduce((sum, reservation) => {
+    const settlement = reservation.reservationId
+      ? settlements.get(reservation.reservationId)
+      : undefined;
+    return sum + (
+      settlement?.reportedUsage?.total
+      ?? settlement?.reportedUsage?.totalTokenCount
+      ?? (reservation.estimatedPromptTokens ?? 0) + (reservation.maximumOutputTokens ?? 0)
+    );
+  }, 0);
+  return {
+    calls: legacy.length + reservations.length,
+    estimatedTokens: legacyTokens + reservedTokens,
+  };
+}
+
+export async function reserveDailyModelCall(
+  root: string,
+  input: {
+    taskId: string;
+    estimatedPromptTokens: number;
+    maximumOutputTokens: number;
+  },
+  now = new Date(),
+) {
+  const usageFile = path.join(root, "agent/state/model-usage.jsonl");
+  await mkdir(path.dirname(usageFile), { recursive: true });
+  const entries = await readModelUsageEntries(usageFile);
+  const status = summarizeDailyModelBudget(entries, now);
+  if (status.reason) throw new Error(status.reason);
+  const reservedCostUsd = maximumModelCallCostUsd(
+    input.estimatedPromptTokens,
+    input.maximumOutputTokens,
+  );
+  if (status.estimatedCostUsd + reservedCostUsd > status.costLimitUsd + Number.EPSILON) {
+    throw new Error("daily_model_cost_limit_exhausted");
+  }
+  const reservationId = createHash("sha256")
+    .update(`${input.taskId}:${now.toISOString()}:${status.calls + 1}:${input.estimatedPromptTokens}:${input.maximumOutputTokens}`)
+    .digest("hex");
+  const entry: ModelUsageEntry = {
+    entryType: "reservation",
+    reservationId,
+    timestamp: now.toISOString(),
+    taskId: input.taskId,
+    estimatedPromptTokens: input.estimatedPromptTokens,
+    maximumOutputTokens: input.maximumOutputTokens,
+    reservedCostUsd,
+  };
+  await appendFile(usageFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  return { reservationId, reservedCostUsd, call: status.calls + 1 };
+}
+
+async function settleDailyModelCall(
+  usageFile: string,
+  input: {
+    reservationId: string;
+    taskId: string;
+    timestamp: string;
+    reservedCostUsd: number;
+    reportedUsage?: Record<string, number>;
+    detail: Record<string, unknown>;
+  },
+) {
+  const entry: ModelUsageEntry & Record<string, unknown> = {
+    entryType: "settlement",
+    reservationId: input.reservationId,
+    timestamp: input.timestamp,
+    taskId: input.taskId,
+    reportedUsage: input.reportedUsage ?? null,
+    estimatedCostUsd: input.reportedUsage
+      ? estimateCostUsd(input.reportedUsage)
+      : input.reservedCostUsd,
+    ...input.detail,
+  };
+  await appendFile(usageFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  return entry;
 }
 
 export async function getDailyModelBudgetStatus(
@@ -215,6 +349,7 @@ async function callVertexOnce(
   prompt: string,
   callIndex: number,
   hardTimeoutMs: number,
+  maximumOutputTokens: number,
 ): Promise<{
   status: number;
   stdout: string;
@@ -263,6 +398,7 @@ async function callVertexOnce(
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
+          maxOutputTokens: maximumOutputTokens,
           responseMimeType: "application/json",
           responseSchema: {
             type: "OBJECT",
@@ -374,17 +510,9 @@ async function _requestGeminiPatch(
   await mkdir(path.dirname(usageFile), { recursive: true });
 
   // Budget accounting
-  let calls = 0;
-  let taskEstimatedTokens = 0;
   const entries = await readModelUsageEntries(usageFile);
-  const taskEntries = entries.filter((entry) => entry.taskId === taskId);
   const dailyBudget = summarizeDailyModelBudget(entries, new Date());
-  calls = taskEntries.length;
-  taskEstimatedTokens = taskEntries.reduce(
-    (sum, entry) =>
-      sum + (entry.reportedUsage?.total ?? entry.reportedUsage?.totalTokenCount ?? entry.estimatedPromptTokens ?? 0),
-    0,
-  );
+  const taskUsage = summarizeTaskModelUsage(entries, taskId);
 
   const effectiveMaximumCalls = Math.min(
     maximumCalls,
@@ -395,13 +523,20 @@ async function _requestGeminiPatch(
     numericSetting(process.env.AMF_AGENT_MAX_MODEL_TOKENS, 200_000),
   );
 
-  if (calls >= effectiveMaximumCalls) throw new Error("model_call_budget_exhausted");
+  if (taskUsage.calls >= effectiveMaximumCalls) throw new Error("model_call_budget_exhausted");
   if (dailyBudget.reason) throw new Error(dailyBudget.reason);
 
-  const estimatedPromptTokens = Math.ceil(prompt.length / 4);
-  if (taskEstimatedTokens + estimatedPromptTokens > effectiveMaximumTokens) {
+  // UTF-8 byte length is a conservative tokenizer-independent ceiling: a
+  // tokenizer cannot emit more non-empty tokens than the encoded byte stream.
+  const estimatedPromptTokens = Buffer.byteLength(prompt, "utf8");
+  const remainingTaskTokens = effectiveMaximumTokens - taskUsage.estimatedTokens - estimatedPromptTokens;
+  if (remainingTaskTokens <= 0) {
     throw new Error("model_token_budget_exhausted");
   }
+  const maximumOutputTokens = Math.min(
+    remainingTaskTokens,
+    Math.floor(numericSetting(process.env.AMF_AGENT_MAX_OUTPUT_TOKENS, 8_192)),
+  );
 
   const requestedModel = process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
   const families = allowedModelFamilies();
@@ -433,13 +568,65 @@ async function _requestGeminiPatch(
       await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
     }
 
+    const currentTaskUsage = summarizeTaskModelUsage(
+      await readModelUsageEntries(usageFile),
+      taskId,
+    );
+    if (currentTaskUsage.calls >= effectiveMaximumCalls) {
+      throw new Error("model_call_budget_exhausted");
+    }
+    const callIndex = currentTaskUsage.calls + 1;
+    const reservation = await reserveDailyModelCall(root, {
+      taskId,
+      estimatedPromptTokens,
+      maximumOutputTokens,
+    });
+    await appendAudit(root, {
+      timestamp: new Date().toISOString(),
+      taskId,
+      category: "model",
+      event: "gemini_cost_reserved",
+      detail: {
+        reservationId: reservation.reservationId,
+        reservedCostUsd: reservation.reservedCostUsd,
+        estimatedPromptTokens,
+        maximumOutputTokens,
+        call: callIndex,
+      },
+    });
+
     const callResult = await callVertexOnce(
       root, taskId, requestedModel, location, project,
-      prompt, calls + 1, hardTimeoutMs,
+      prompt, callIndex, hardTimeoutMs, maximumOutputTokens,
     );
 
     const { status, stdout, stderr, durationMs, timedOut, stdoutArtifact, stderrArtifact } =
       callResult;
+    const extracted = status === 0
+      ? extractResponse(stdout)
+      : { parsed: null, error: null };
+    const settlementTimestamp = new Date().toISOString();
+    const settlement = await settleDailyModelCall(usageFile, {
+      reservationId: reservation.reservationId,
+      taskId,
+      timestamp: settlementTimestamp,
+      reservedCostUsd: reservation.reservedCostUsd,
+      reportedUsage: extracted.parsed?.reportedUsage,
+      detail: {
+        requestedModel,
+        actualModel: extracted.parsed?.actualModel ?? "unreported",
+        location,
+        project,
+        call: callIndex,
+        durationMs,
+        estimatedPromptTokens,
+        maximumOutputTokens,
+        status,
+        timedOut,
+        stdoutArtifact,
+        stderrArtifact,
+      },
+    });
 
     // Artifacts are already written incrementally; log their paths
     await appendAudit(root, {
@@ -499,7 +686,7 @@ async function _requestGeminiPatch(
     }
 
     // Parse response
-    const { parsed, error: parseError } = extractResponse(stdout);
+    const { parsed, error: parseError } = extracted;
     if (parseError || !parsed) {
       throw new Error(parseError ?? "gemini_response_parse_failed:unknown");
     }
@@ -534,28 +721,11 @@ async function _requestGeminiPatch(
     }
 
     // Persist validated response
-    const outputFile = path.join(root, "artifacts", taskId, `gemini-response-${calls + 1}.json`);
+    const outputFile = path.join(root, "artifacts", taskId, `gemini-response-${callIndex}.json`);
     await writeFile(outputFile, stdout, { mode: 0o600 });
 
-    const usage = {
-      timestamp: new Date().toISOString(),
-      taskId,
-      requestedModel,
-      actualModel: actualModel ?? "unreported",
-      location,
-      project,
-      call: calls + 1,
-      durationMs,
-      estimatedPromptTokens,
-      reportedUsage: parsed.reportedUsage ?? null,
-      estimatedCostUsd: estimateCostUsd(parsed.reportedUsage),
-      stdoutArtifact,
-      stderrArtifact,
-    };
-    await appendFile(usageFile, `${JSON.stringify(usage)}\n`, { mode: 0o600 });
-
     await appendAudit(root, {
-      timestamp: usage.timestamp,
+      timestamp: settlementTimestamp,
       taskId,
       category: "model",
       event: "gemini_patch_response",
@@ -564,8 +734,10 @@ async function _requestGeminiPatch(
         actualModel: actualModel ?? "unreported",
         location,
         project,
-        call: calls + 1,
+        call: callIndex,
         durationMs,
+        reservationId: reservation.reservationId,
+        estimatedCostUsd: settlement.estimatedCostUsd,
         outputFile,
         stdoutArtifact,
         stderrArtifact,

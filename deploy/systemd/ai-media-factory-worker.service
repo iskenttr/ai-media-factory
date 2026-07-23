@@ -1,0 +1,49 @@
+[Unit]
+Description=AI Media Factory media worker
+After=network-online.target ai-media-factory-web.service
+Wants=network-online.target
+ConditionPathExists=/opt/ai-media-factory-runtime/current/worker/run.ts
+
+[Service]
+Type=simple
+User=amf-runtime
+Group=amf-runtime
+WorkingDirectory=/opt/ai-media-factory-runtime/current
+Environment=NODE_ENV=production
+Environment=HOME=/var/tmp/amf-runtime
+Environment=NEXT_TELEMETRY_DISABLED=1
+EnvironmentFile=/etc/ai-media-factory/runtime.env
+ExecStart=/opt/node24/bin/npm run worker
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/ai-media-factory /var/tmp/amf-runtime
+InaccessiblePaths=/opt/ai-media-factory-autonomous /root/.ssh /home
+CapabilityBoundingSet=
+AmbientCapabilities=
+TasksMax=768
+MemoryMax=10G
+CPUQuota=300%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-media-factory-worker
+
+[Install]
+WantedBy=multi-user.target
