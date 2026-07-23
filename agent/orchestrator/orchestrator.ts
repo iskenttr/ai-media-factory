@@ -17,7 +17,7 @@ import { writeDashboardSnapshot } from "./dashboard";
 import { numericSetting } from "../policies/limits";
 import { mayAttemptRepair, type RepairObservation } from "../../lib/subtitle-quality/v3";
 import { acceptanceEvidencePassed } from "./acceptance";
-import { checkAndGenerateBacklogTask } from "./backlog-generator";
+import { checkAndGenerateBacklogTask, recordTaskOutcome } from "./backlog-generator";
 
 interface TaskRuntime {
   state: TaskState;
@@ -68,6 +68,24 @@ async function finalize(root: string, task: EngineeringTask, runtime: TaskRuntim
       event: "task_file_moved",
       detail: { destination, processingFile },
     });
+    try {
+      const outcome = runtime.state === "ACCEPTED" ? "accepted" : runtime.state === "REJECTED" ? "rejected" : "failed";
+      const recorded = await recordTaskOutcome(root, task.task_id, task.title, outcome, runtime.state);
+      if (recorded) {
+        await appendAudit(root, {
+          timestamp: new Date().toISOString(), taskId: task.task_id, category: "system",
+          event: "backlog_task_outcome_recorded",
+          detail: { outcome, taskTitle: task.title },
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await appendAudit(root, {
+        timestamp: new Date().toISOString(), taskId: task.task_id, category: "system",
+        event: "backlog_task_outcome_record_failed",
+        detail: { message, taskTitle: task.title },
+      });
+    }
   }
   return report;
 }

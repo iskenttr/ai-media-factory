@@ -145,6 +145,7 @@ export const RATIOS = {
  */
 export interface TaskMetadata {
   taskId: string;
+  title?: string;
   generatedAt: string;
   category: TaskCategory;
   priority: Priority;
@@ -226,8 +227,12 @@ export async function isQueueEmpty(root: string): Promise<boolean> {
 /**
  * Check if task was previously completed
  */
+function normalizeTaskTitle(taskTitle: string): string {
+  return taskTitle.toLowerCase().replace(/[^a-z0-9]/g, "-");
+}
+
 export function wasTaskCompleted(state: BacklogState, taskTitle: string): boolean {
-  const normalizedTitle = taskTitle.toLowerCase().replace(/[^a-z0-9]/g, "-");
+  const normalizedTitle = normalizeTaskTitle(taskTitle);
   return state.completedTaskIds.has(normalizedTitle);
 }
 
@@ -235,7 +240,7 @@ export function wasTaskCompleted(state: BacklogState, taskTitle: string): boolea
  * Check if task has exceeded retry limit
  */
 export function hasExceededRetryLimit(state: BacklogState, taskTitle: string): boolean {
-  const normalizedTitle = taskTitle.toLowerCase().replace(/[^a-z0-9]/g, "-");
+  const normalizedTitle = normalizeTaskTitle(taskTitle);
   const retryCount = state.failedTaskIds.get(normalizedTitle) || 0;
   return retryCount >= 1; // Only retry once
 }
@@ -678,6 +683,7 @@ export async function generateBacklogTask(root: string): Promise<{
   // Update state
   const metadata: TaskMetadata = {
     taskId: task.task_id,
+    title: taskSuggestion.title,
     generatedAt: new Date().toISOString(),
     category: taskSuggestion.category,
     priority: taskSuggestion.priority,
@@ -725,29 +731,35 @@ export async function checkAndGenerateBacklogTask(
 export async function recordTaskOutcome(
   root: string,
   taskId: string,
+  taskTitle: string,
   status: "accepted" | "rejected" | "failed",
   failureReason?: string
-): Promise<void> {
+): Promise<boolean> {
   const state = await loadBacklogState(root);
 
   const task = state.generatedTasks.find((t) => t.taskId === taskId);
-  if (task) {
-    task.status = status;
-    task.prNumber = undefined; // Would be set if we tracked PR numbers
-    if (failureReason) {
-      task.failureReason = failureReason;
-    }
+  if (!task) {
+    return false;
   }
 
-  if (status === "failed" && failureReason) {
-    const normalizedTitle = taskId.toLowerCase().replace(/[^a-z0-9]/g, "-");
+  task.title ??= taskTitle;
+  task.status = status;
+  task.prNumber = undefined; // Would be set if we tracked PR numbers
+  if (failureReason) {
+    task.failureReason = failureReason;
+  }
+
+  const normalizedTitle = normalizeTaskTitle(task.title);
+
+  if (status === "failed" || status === "rejected") {
     const currentRetry = state.failedTaskIds.get(normalizedTitle) || 0;
     state.failedTaskIds.set(normalizedTitle, currentRetry + 1);
   }
 
   if (status === "accepted") {
-    state.completedTaskIds.add(taskId.toLowerCase().replace(/[^a-z0-9]/g, "-"));
+    state.completedTaskIds.add(normalizedTitle);
   }
 
   await saveBacklogState(root, state);
+  return true;
 }
