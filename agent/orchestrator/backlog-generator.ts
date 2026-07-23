@@ -106,6 +106,7 @@ export async function hasValidContextPaths(
  */
 export const PRIORITY_ORDER = [
   "bug",           // Confirmed bugs
+  "voice_dubbing", // Voice and dubbing quality
   "reliability",    // Reliability improvements
   "subtitle_quality", // Subtitle quality
   "translation_quality", // Translation quality
@@ -285,6 +286,79 @@ export function mustGenerateSourceCodeTask(state: BacklogState): boolean {
  * Task suggestions organized by priority
  */
 export const TASK_SUGGESTIONS: TaskSuggestion[] = [
+  // Voice and dubbing quality
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Define consent-aware TTS provider and voice profile contracts",
+    objective: "Add typed contracts for TTS providers, voice profiles, consent records, provenance, and provider capabilities. Voice cloning must require explicit consent metadata and a traceable source; do not install models, add secrets, or make network calls.",
+    allowedPaths: ["lib/providers/**/*.ts", "lib/localization/**/*.ts"],
+    testCommands: [["npm", "test", "--", "provider-registry"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "test",
+    title: "Add deterministic dubbed-audio quality metrics",
+    objective: "Implement deterministic quality measurements for dubbed audio covering integrated loudness, true peak and clipping, silence ratio, and duration mismatch. Use generated synthetic fixtures only and return structured diagnostics that can be compared in tests.",
+    allowedPaths: ["lib/server/**/*.ts", "lib/localization/**/*.ts", "agent/evaluators/**/*.ts"],
+    testCommands: [["npm", "test", "--", "dubbing"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Add Turkish pronunciation normalization for TTS",
+    objective: "Add a conservative Turkish TTS text-normalization stage for common acronyms, numbers, dates, abbreviations, and punctuation pauses. Preserve the original localized text, expose normalization decisions for review, and cover ambiguous inputs with tests.",
+    allowedPaths: ["lib/localization/**/*.ts", "lib/**/*.ts"],
+    testCommands: [["npm", "test", "--", "text-utils"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Add speaker-aware voice assignment for localization",
+    objective: "Add deterministic voice assignment that keeps the same approved voice for each speaker across localized segments and honors explicit user overrides. Treat speaker labels as project metadata and do not infer identity, gender, age, or other biometric traits.",
+    allowedPaths: ["lib/localization/**/*.ts", "lib/server/**/*.ts"],
+    testCommands: [["npm", "test", "--", "store"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Add capability-based TTS provider fallback",
+    objective: "Implement deterministic TTS provider selection and fallback using declared capabilities such as language support, approved voice use, offline availability, and CPU or GPU requirements. Return structured unavailable and failure reasons without inventing provider capabilities.",
+    allowedPaths: ["lib/providers/**/*.ts", "lib/localization/**/*.ts"],
+    testCommands: [["npm", "test", "--", "provider-registry"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Add loudness normalization and clipping guard for dubbing",
+    objective: "Add a tested FFmpeg argument builder and validation layer for dubbed-audio loudness normalization and true-peak limiting. Produce a separate derived output, keep source audio unchanged, and surface clipping or invalid measurement failures clearly.",
+    allowedPaths: ["lib/server/**/*.ts", "lib/localization/**/*.ts"],
+    testCommands: [["npm", "test", "--", "media"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "test",
+    title: "Add dubbing segment synchronization evaluator",
+    objective: "Add a deterministic evaluator that compares generated speech duration with localization segment timing and reports overflow, excessive gaps, and cumulative drift against explicit thresholds. Cover fast, slow, and multi-segment synthetic cases.",
+    allowedPaths: ["lib/localization/**/*.ts", "lib/server/**/*.ts", "agent/evaluators/**/*.ts"],
+    testCommands: [["npm", "test", "--", "dubbing"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "source_code",
+    title: "Add per-segment voice preview and regeneration workflow",
+    objective: "Add the server-side workflow for generating a per-segment voice preview and requesting a revised take with explicit voice and pronunciation settings. Persist status, revision history, consent provenance, and failure details; do not autoplay or overwrite accepted audio.",
+    allowedPaths: ["app/api/localization/**/*.ts", "lib/server/**/*.ts", "lib/localization/**/*.ts"],
+    testCommands: [["npm", "test", "--", "store"]],
+  },
+  {
+    priority: "voice_dubbing",
+    category: "test",
+    title: "Build golden Turkish dubbing quality fixtures",
+    objective: "Create a deterministic, license-safe Turkish dubbing quality fixture set using synthetic text and generated metadata for single-speaker, multi-speaker, fast, slow, punctuation, number, and abbreviation cases. Add a repeatable benchmark report without copyrighted audio.",
+    allowedPaths: ["agent/evaluators/**/*.ts", "lib/localization/**/*.ts", "lib/server/**/*.ts"],
+    testCommands: [["npm", "test", "--", "dubbing"]],
+  },
   // Reliability
   {
     priority: "reliability",
@@ -480,7 +554,7 @@ export async function createTaskFromSuggestion(
   root: string
 ): Promise<EngineeringTask> {
   const taskId = generateTaskId(suggestion.priority);
-  const isHighPriority = ["bug", "reliability", "security"].includes(suggestion.priority);
+  const isHighPriority = ["bug", "voice_dubbing", "reliability", "security"].includes(suggestion.priority);
 
   // Resolve context paths to existing directories
   const contextPaths = await resolveContextPaths(suggestion.allowedPaths, root);

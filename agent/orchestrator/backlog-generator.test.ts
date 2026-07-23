@@ -251,6 +251,16 @@ describe("Task selection", () => {
     expect(task).not.toBeNull();
     expect(task!.category).toBe("source_code");
   });
+
+  it("selectNextTask prioritizes voice and dubbing after known bugs", () => {
+    const state = createEmptyState();
+    state.completedTaskIds.add("fix-memory-leak-in-render-worker");
+    state.completedTaskIds.add("add-regression-test-for-srt-timestamp-parsing");
+    const task = selectNextTask(state);
+    expect(task).not.toBeNull();
+    expect(task!.priority).toBe("voice_dubbing");
+    expect(task!.title).toBe("Define consent-aware TTS provider and voice profile contracts");
+  });
 });
 
 describe("Protected branch safety", () => {
@@ -307,12 +317,36 @@ describe("Priority order", () => {
     expect(PRIORITY_ORDER[0]).toBe("bug");
   });
 
+  it("voice and dubbing is the highest product-improvement priority", () => {
+    expect(PRIORITY_ORDER[1]).toBe("voice_dubbing");
+  });
+
   it("test_gaps is lowest priority", () => {
     expect(PRIORITY_ORDER[PRIORITY_ORDER.length - 1]).toBe("test_gaps");
   });
 
-  it("priority order has 9 categories", () => {
-    expect(PRIORITY_ORDER).toHaveLength(9);
+  it("priority order has 10 categories", () => {
+    expect(PRIORITY_ORDER).toHaveLength(10);
+  });
+});
+
+describe("Voice and dubbing focus", () => {
+  it("provides a sustained source-led implementation backlog", () => {
+    const tasks = TASK_SUGGESTIONS.filter((task) => task.priority === "voice_dubbing");
+    expect(tasks).toHaveLength(9);
+    expect(tasks[0]).toMatchObject({
+      category: "source_code",
+      title: "Define consent-aware TTS provider and voice profile contracts",
+    });
+    expect(tasks.filter((task) => task.category === "source_code").length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("requires consent and provenance in the voice foundation task", () => {
+    const task = TASK_SUGGESTIONS.find(
+      (suggestion) => suggestion.title === "Define consent-aware TTS provider and voice profile contracts"
+    );
+    expect(task?.objective).toContain("explicit consent");
+    expect(task?.objective).toContain("provenance");
   });
 });
 
@@ -375,10 +409,10 @@ describe("File system operations", () => {
       expect(task.limits.maximum_iterations).toBe(6);
     });
 
-    it("createTaskFromSuggestion sets high priority for bug/reliability/security", async () => {
-      const bugSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "bug");
-      if (bugSuggestion) {
-        const task = await createTaskFromSuggestion(bugSuggestion, tempDir);
+    it("createTaskFromSuggestion sets high priority for voice and dubbing", async () => {
+      const voiceSuggestion = TASK_SUGGESTIONS.find((t) => t.priority === "voice_dubbing");
+      if (voiceSuggestion) {
+        const task = await createTaskFromSuggestion(voiceSuggestion, tempDir);
         expect(task.priority).toBe("high");
       }
     });
@@ -409,6 +443,11 @@ describe("Integration tests", () => {
     await mkdir(path.join(tempDir, "lib/subtitle-quality"), { recursive: true });
     await mkdir(path.join(tempDir, "lib/translation"), { recursive: true });
     await mkdir(path.join(tempDir, "lib/render"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/localization"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/providers"), { recursive: true });
+    await mkdir(path.join(tempDir, "lib/server"), { recursive: true });
+    await mkdir(path.join(tempDir, "app/api/localization"), { recursive: true });
+    await mkdir(path.join(tempDir, "agent/evaluators"), { recursive: true });
     await mkdir(path.join(tempDir, "docs"), { recursive: true });
   });
 
@@ -513,6 +552,15 @@ describe("Integration tests", () => {
     };
     // Manually add all known task titles as completed
     const completedTitles = [
+      "Define consent-aware TTS provider and voice profile contracts",
+      "Add deterministic dubbed-audio quality metrics",
+      "Add Turkish pronunciation normalization for TTS",
+      "Add speaker-aware voice assignment for localization",
+      "Add capability-based TTS provider fallback",
+      "Add loudness normalization and clipping guard for dubbing",
+      "Add dubbing segment synchronization evaluator",
+      "Add per-segment voice preview and regeneration workflow",
+      "Build golden Turkish dubbing quality fixtures",
       "Add error boundary for API routes",
       "Add health check to background workers",
       "Add timing validation for subtitle segments",
