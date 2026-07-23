@@ -100,10 +100,10 @@ describe("Task completion and retry", () => {
     expect(hasExceededRetryLimit(state, "Retry task")).toBe(false);
   });
 
-  it("hasExceededRetryLimit returns true for first failure (limit is 1)", () => {
+  it("hasExceededRetryLimit allows one retry after the first failure", () => {
     const state = createEmptyState();
     state.failedTaskIds.set("retry-task", 1);
-    expect(hasExceededRetryLimit(state, "Retry task")).toBe(true);
+    expect(hasExceededRetryLimit(state, "Retry task")).toBe(false);
   });
 
   it("hasExceededRetryLimit returns true for multiple failures", () => {
@@ -348,6 +348,21 @@ describe("Voice and dubbing focus", () => {
     expect(task?.objective).toContain("explicit consent");
     expect(task?.objective).toContain("provenance");
   });
+
+  it("keeps Turkish pronunciation context bounded", () => {
+    const task = TASK_SUGGESTIONS.find(
+      (suggestion) => suggestion.title === "Add Turkish pronunciation normalization for TTS"
+    );
+    expect(task?.allowedPaths).not.toContain("lib/**/*.ts");
+    expect(task?.allowedPaths).toContain("lib/text-utils.ts");
+  });
+
+  it("uses a test filter that matches dubbed-audio quality tests", () => {
+    const task = TASK_SUGGESTIONS.find(
+      (suggestion) => suggestion.title === "Add deterministic dubbed-audio quality metrics"
+    );
+    expect(task?.testCommands).toContainEqual(["npm", "test", "--", "dubbed-audio-quality"]);
+  });
 });
 
 describe("File system operations", () => {
@@ -401,6 +416,9 @@ describe("File system operations", () => {
       expect(task.limits.maximum_iterations).toBe(6);
       expect(task.enabled).toBe(true);
       expect(task.limits.maximum_execution_ms).toBe(1800000);
+      if (task.execution.kind === "gemini_patch") {
+        expect(task.execution.repair_strategy).toBe("gemini_patch_review");
+      }
     });
 
     it("createTaskFromSuggestion creates valid task in production mode", async () => {
@@ -523,11 +541,16 @@ describe("Integration tests", () => {
 
     expect(await recordTaskOutcome(tempDir, task.task_id, task.title, "rejected", "qa_failed")).toBe(true);
 
-    const state = await loadBacklogState(tempDir);
-    const metadata = state.generatedTasks.find((entry) => entry.taskId === task.task_id);
+    const retryableState = await loadBacklogState(tempDir);
+    const metadata = retryableState.generatedTasks.find((entry) => entry.taskId === task.task_id);
     expect(metadata).toMatchObject({ title: task.title, status: "rejected", failureReason: "qa_failed" });
-    expect(hasExceededRetryLimit(state, task.title)).toBe(true);
-    expect(selectNextTask(state)?.title).not.toBe(task.title);
+    expect(hasExceededRetryLimit(retryableState, task.title)).toBe(false);
+    expect(selectNextTask(retryableState)?.title).toBe(task.title);
+
+    expect(await recordTaskOutcome(tempDir, task.task_id, task.title, "rejected", "qa_failed_again")).toBe(true);
+    const exhaustedState = await loadBacklogState(tempDir);
+    expect(hasExceededRetryLimit(exhaustedState, task.title)).toBe(true);
+    expect(selectNextTask(exhaustedState)?.title).not.toBe(task.title);
   });
 
   it("Manual tasks do not pollute autonomous backlog history", async () => {

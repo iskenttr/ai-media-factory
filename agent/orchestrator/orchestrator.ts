@@ -7,6 +7,7 @@ import { sendCompletionNotification } from "../notifications/email";
 import { inspectDiff } from "../policies/diff-policy";
 import { validateTaskSafety, isDevelopmentMode, type EngineeringTask, type TaskState } from "../tasks/schema";
 import { cleanupFailedTaskWorktree, commitCandidate, createTaskWorktree, inspectWorktree, publishAcceptedCandidate, resolveHead } from "../workers/git-gateway";
+import { getDailyModelBudgetStatus } from "../workers/gemini-broker";
 import { implementTask } from "../workers/engineering-agent";
 import { runQa } from "../workers/qa-agent";
 import { reviewCandidate } from "../workers/security-agent";
@@ -255,9 +256,35 @@ async function acquireLock(root: string) {
 export async function runOrchestrator(root: string, options: { once: boolean }) {
   const release = await acquireLock(root);
   const heartbeat = path.join(root, "agent/state/heartbeat.json");
+  let lastBudgetPauseKey: string | null = null;
   try {
     do {
-      await writeFile(heartbeat, `${JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString(), idle: true })}\n`, { mode: 0o600 });
+      const modelBudget = await getDailyModelBudgetStatus(root);
+      await writeFile(heartbeat, `${JSON.stringify({
+        pid: process.pid,
+        timestamp: new Date().toISOString(),
+        idle: true,
+        modelBudget,
+      })}\n`, { mode: 0o600 });
+
+      if (modelBudget.exhausted) {
+        const pauseKey = `${modelBudget.date}:${modelBudget.reason}:${modelBudget.calls}:${modelBudget.estimatedCostUsd}`;
+        if (lastBudgetPauseKey !== pauseKey) {
+          await appendAudit(root, {
+            timestamp: new Date().toISOString(),
+            taskId: "MODEL-BUDGET",
+            category: "system",
+            event: "model_budget_exhausted_waiting",
+            detail: { ...modelBudget },
+          });
+          lastBudgetPauseKey = pauseKey;
+        }
+        await writeDashboardSnapshot(root);
+        if (options.once) return;
+        await new Promise((resolve) => setTimeout(resolve, numericSetting(process.env.AMF_AGENT_POLL_INTERVAL_MS, 30_000)));
+        continue;
+      }
+      lastBudgetPauseKey = null;
 
       // Generate backlog task if queue is empty and no tasks are processing
       const generation = await checkAndGenerateBacklogTask(root);

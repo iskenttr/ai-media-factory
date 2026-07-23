@@ -12,6 +12,96 @@ export interface ModelResponse {
   actualModel: string;
 }
 
+interface ModelUsageEntry {
+  taskId: string;
+  timestamp: string;
+  estimatedPromptTokens?: number;
+  reportedUsage?: Record<string, number> | null;
+  estimatedCostUsd?: number;
+}
+
+export interface DailyModelBudgetStatus {
+  date: string;
+  calls: number;
+  requestLimit: number;
+  estimatedCostUsd: number;
+  costLimitUsd: number;
+  exhausted: boolean;
+  reason: "daily_model_request_limit_exhausted" | "daily_model_cost_limit_exhausted" | null;
+}
+
+async function readModelUsageEntries(usageFile: string): Promise<ModelUsageEntry[]> {
+  let content: string;
+  try {
+    content = await readFile(usageFile, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  return content
+    .split("\n")
+    .filter(Boolean)
+    .map((line, index) => {
+      try {
+        const entry = JSON.parse(line) as ModelUsageEntry;
+        if (typeof entry.taskId !== "string" || typeof entry.timestamp !== "string") {
+          throw new Error("required_fields_missing");
+        }
+        return entry;
+      } catch {
+        throw new Error(`model_usage_ledger_invalid:line_${index + 1}`);
+      }
+    });
+}
+
+function summarizeDailyModelBudget(
+  entries: ModelUsageEntry[],
+  now: Date,
+): DailyModelBudgetStatus {
+  const date = now.toISOString().slice(0, 10);
+  const requestLimit = numericSetting(
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT,
+    50,
+  );
+  const costLimitUsd = numericSetting(
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD,
+    5,
+  );
+  const dailyEntries = entries.filter((entry) => entry.timestamp.startsWith(date));
+  const estimatedCostUsd = dailyEntries.reduce(
+    (sum, entry) => sum + (entry.estimatedCostUsd ?? 0),
+    0,
+  );
+  const reason =
+    dailyEntries.length >= requestLimit
+      ? "daily_model_request_limit_exhausted"
+      : estimatedCostUsd >= costLimitUsd
+        ? "daily_model_cost_limit_exhausted"
+        : null;
+
+  return {
+    date,
+    calls: dailyEntries.length,
+    requestLimit,
+    estimatedCostUsd,
+    costLimitUsd,
+    exhausted: reason !== null,
+    reason,
+  };
+}
+
+export async function getDailyModelBudgetStatus(
+  root: string,
+  now = new Date(),
+): Promise<DailyModelBudgetStatus> {
+  const usageFile = path.join(root, "agent/state/model-usage.jsonl");
+  return summarizeDailyModelBudget(
+    await readModelUsageEntries(usageFile),
+    now,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Concurrency guard — only one Gemini CLI process at a time per process.
 // ---------------------------------------------------------------------------
@@ -285,39 +375,16 @@ async function _requestGeminiPatch(
 
   // Budget accounting
   let calls = 0;
-  let dailyCalls = 0;
   let taskEstimatedTokens = 0;
-  let dailyEstimatedCostUsd = 0;
-  const today = new Date().toISOString().slice(0, 10);
-
-  try {
-    const entries = (await readFile(usageFile, "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map(
-        (line) =>
-          JSON.parse(line) as {
-            taskId: string;
-            timestamp: string;
-            estimatedPromptTokens?: number;
-            reportedUsage?: Record<string, number>;
-            estimatedCostUsd?: number;
-          },
-      );
-    const taskEntries = entries.filter((e) => e.taskId === taskId);
-    calls = taskEntries.length;
-    dailyCalls = entries.filter((e) => e.timestamp.startsWith(today)).length;
-    dailyEstimatedCostUsd = entries
-      .filter((e) => e.timestamp.startsWith(today))
-      .reduce((sum, e) => sum + (e.estimatedCostUsd ?? 0), 0);
-    taskEstimatedTokens = taskEntries.reduce(
-      (sum, e) =>
-        sum + (e.reportedUsage?.total ?? e.reportedUsage?.totalTokenCount ?? e.estimatedPromptTokens ?? 0),
-      0,
-    );
-  } catch {
-    /* first call */
-  }
+  const entries = await readModelUsageEntries(usageFile);
+  const taskEntries = entries.filter((entry) => entry.taskId === taskId);
+  const dailyBudget = summarizeDailyModelBudget(entries, new Date());
+  calls = taskEntries.length;
+  taskEstimatedTokens = taskEntries.reduce(
+    (sum, entry) =>
+      sum + (entry.reportedUsage?.total ?? entry.reportedUsage?.totalTokenCount ?? entry.estimatedPromptTokens ?? 0),
+    0,
+  );
 
   const effectiveMaximumCalls = Math.min(
     maximumCalls,
@@ -329,16 +396,7 @@ async function _requestGeminiPatch(
   );
 
   if (calls >= effectiveMaximumCalls) throw new Error("model_call_budget_exhausted");
-  if (dailyCalls >= numericSetting(process.env.AMF_AGENT_DAILY_REQUEST_LIMIT, 50)) {
-    throw new Error("daily_model_request_limit_exhausted");
-  }
-  const dailyCostLimitUsd = numericSetting(
-    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD,
-    5,
-  );
-  if (dailyEstimatedCostUsd >= dailyCostLimitUsd) {
-    throw new Error("daily_model_cost_limit_exhausted");
-  }
+  if (dailyBudget.reason) throw new Error(dailyBudget.reason);
 
   const estimatedPromptTokens = Math.ceil(prompt.length / 4);
   if (taskEstimatedTokens + estimatedPromptTokens > effectiveMaximumTokens) {
