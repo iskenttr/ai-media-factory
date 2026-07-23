@@ -19,6 +19,12 @@ describe("command policy", () => {
     expect(() => validateCommand(request(["ffprobe", "/etc/passwd"]), worktree, artifacts)).toThrow("absolute_path_forbidden");
   });
   it("rejects credentials in argv", () => expect(() => validateCommand(request(["node", "x.js", "token=abcdefghijklmnop"]), worktree, artifacts)).toThrow("secret_in_command_argv"));
+  it("allows the sandbox artifact mount but rejects traversal outside it", () => {
+    expect(validateCommand(request(["ffprobe", "/artifacts/output.mp4"]), worktree, artifacts).args).toEqual(["/artifacts/output.mp4"]);
+    expect(validateCommand(request(["ffprobe", "/artifacts"]), worktree, artifacts).args).toEqual(["/artifacts"]);
+    expect(() => validateCommand(request(["ffprobe", "/artifacts/../etc/passwd"]), worktree, artifacts)).toThrow("absolute_path_forbidden");
+    expect(() => validateCommand(request(["ffprobe", "/artifacts-escape/output.mp4"]), worktree, artifacts)).toThrow("absolute_path_forbidden");
+  });
 });
 
 describe("development mode (policy v2)", () => {

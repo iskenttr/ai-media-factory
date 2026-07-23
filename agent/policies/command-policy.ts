@@ -137,6 +137,11 @@ function validatePushTarget(args: string[], developmentMode: boolean): void {
   }
 }
 
+function isSandboxArtifactPath(argument: string): boolean {
+  const normalized = path.posix.normalize(argument);
+  return normalized === "/artifacts" || normalized.startsWith("/artifacts/");
+}
+
 export function validateCommand(request: CommandRequest, worktree: string, artifacts: string, developmentMode = false) {
   if (!request.argv.length || request.argv.some((arg) => arg.includes("\0") || /[\r\n]/.test(arg))) throw new Error("invalid_command_argv");
   const executable = path.basename(request.argv[0]);
@@ -187,6 +192,7 @@ export function validateCommand(request: CommandRequest, worktree: string, artif
   }
   for (const argument of request.argv.slice(1)) {
     if (!path.isAbsolute(argument)) continue;
+    if (isSandboxArtifactPath(argument)) continue;
     const inWorktree = path.resolve(argument).startsWith(`${path.resolve(worktree)}${path.sep}`);
     const inArtifacts = path.resolve(argument).startsWith(`${path.resolve(artifacts)}${path.sep}`) || path.resolve(argument) === path.resolve(artifacts);
     if (!inWorktree && !inArtifacts) throw new Error(`absolute_path_forbidden:${argument}`);
