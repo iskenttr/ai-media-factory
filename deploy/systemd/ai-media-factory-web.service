@@ -15,7 +15,7 @@ Environment=PORT=3000
 Environment=HOME=/var/lib/ai-media-factory
 Environment=NEXT_TELEMETRY_DISABLED=1
 EnvironmentFile=/etc/ai-media-factory/runtime.env
-ExecStart=/opt/node24/bin/npm run start
+ExecStart=/opt/node24/bin/npm run start -- --hostname 127.0.0.1 --port 3000
 Restart=always
 RestartSec=5
 TimeoutStartSec=90
