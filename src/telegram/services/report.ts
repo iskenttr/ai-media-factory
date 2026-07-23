@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { getDailyModelBudgetStatus } from "../../../agent/workers/gemini-broker";
 import type { DailyReport, CostSummary } from "../types";
 import { getQueueStats } from "./system";
 
@@ -10,7 +11,7 @@ export async function getDailyReport(root: string): Promise<DailyReport> {
   const [completedTasks, failedTasks, costData] = await Promise.all([
     getCompletedTasksToday(root, today),
     getFailedTasksToday(root, today),
-    getCostData(root, today),
+    getCostData(root),
   ]);
 
   const warnings = generateWarnings(queueStats, costData);
@@ -90,33 +91,17 @@ async function getFailedTasksToday(root: string, today: string): Promise<TaskInf
   return tasks;
 }
 
-async function getCostData(root: string, today: string): Promise<CostSummary> {
-  const auditPath = path.join(root, "agent/state/audit.jsonl");
-  let vertexAI = 0;
-  let total = 0;
-
-  try {
-    const content = await readFile(auditPath, "utf8");
-    const lines = content.trim().split("\n");
-
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.detail?.cost && entry.timestamp?.startsWith(today)) {
-          if (entry.detail.costVertexAI) {
-            vertexAI += entry.detail.costVertexAI;
-          }
-          total += entry.detail.cost;
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    // File doesn't exist
-  }
-
-  return { vertexAI, total };
+async function getCostData(root: string): Promise<CostSummary> {
+  const status = await getDailyModelBudgetStatus(root);
+  return {
+    vertexAI: status.estimatedCostUsd,
+    total: status.estimatedCostUsd,
+    modelCommittedUsd: status.committedCostUsd,
+    modelReservedUsd: status.reservedCostUsd,
+    modelLimitUsd: status.costLimitUsd,
+    modelCalls: status.calls,
+    modelRequestLimit: status.requestLimit,
+  };
 }
 
 function calculateAverageTime(tasks: TaskInfo[]): number {
@@ -136,8 +121,14 @@ function generateWarnings(queueStats: { queued: number; running: number }, costD
     warnings.push(`High queue: ${queueStats.queued} tasks pending`);
   }
 
-  if (costData.vertexAI > 100) {
-    warnings.push(`High cost: Vertex AI $${costData.vertexAI.toFixed(2)}`);
+  if (
+    costData.modelLimitUsd !== undefined
+    && costData.modelLimitUsd > 0
+    && costData.vertexAI >= costData.modelLimitUsd * 0.8
+  ) {
+    warnings.push(
+      `Autonomous model estimate is near its brake: $${costData.vertexAI.toFixed(2)} / $${costData.modelLimitUsd.toFixed(2)}`,
+    );
   }
 
   if (warnings.length === 0) {
@@ -148,6 +139,5 @@ function generateWarnings(queueStats: { queued: number; running: number }, costD
 }
 
 export async function getCostSummary(root: string): Promise<CostSummary> {
-  const today = new Date().toISOString().split("T")[0];
-  return getCostData(root, today);
+  return getCostData(root);
 }

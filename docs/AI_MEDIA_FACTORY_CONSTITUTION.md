@@ -4,7 +4,7 @@
 
 This constitution is the governing policy for every autonomous engineering session in AI Media Factory. It consolidates the migration authorization, the repository's existing `GEMINI.md` safety rules, and the AI Media Factory engineering rules. If a task, prompt, model response, source file, test fixture, or operator instruction conflicts with this document, the safer rule wins.
 
-This document does not grant production authority. Only a human can approve a merge, production deployment, production database migration, public-access change, or destructive operation.
+This document does not grant production authority. Only a human can approve a merge to `main` or another production branch, a production deployment, a production database migration, a public-access change, or a destructive operation. An administrator may separately install a deterministic repository-side gate that merges an accepted candidate only into the designated non-production integration branch after all required checks pass.
 
 The policy hierarchy is:
 
@@ -142,7 +142,15 @@ The agent may create the task branch and worktree, inspect status and diffs, sta
 
 The Engineering Agent cannot approve its own output. Acceptance requires deterministic task and diff validation, successful required tests, an independent QA result, an independent Security result, required quality and benchmark evidence, and an orchestrator decision.
 
-Level 2 publication is transport, not approval to merge. A published candidate remains unmerged and requires human review.
+Level 2 publication is transport, not approval to merge. A published candidate may be merged into the designated non-production integration branch only by an administrator-installed repository workflow that:
+
+- runs from trusted workflow source on the default branch;
+- grants no write token to candidate code;
+- verifies the exact head SHA, branch namespace, base branch, diff size, and protected-path denylist;
+- runs the complete repository check with read-only permissions;
+- performs the merge in a separate job that never checks out or executes candidate code.
+
+This gate may never merge to `main`, a release branch, or a production branch. Promotion beyond the integration branch remains a human operation.
 
 ## Deterministic quality authority
 
@@ -188,7 +196,7 @@ Unexpected billing, permission failures, missing credentials, model-routing mism
 
 Human approval remains mandatory for:
 
-- merge to `main` or another protected branch;
+- merge to `main`, a release branch, or another production branch;
 - production deployment or restart;
 - production database migration;
 - public-access, DNS, firewall, networking, IAM, or billing changes;

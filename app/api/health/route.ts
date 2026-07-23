@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAnalysisStore } from "@/lib/server/store";
 import { LocalProviderRegistry } from "@/lib/providers/provider-registry";
+import { serverConfig } from "@/lib/server/config";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,7 @@ interface HealthCheckResult {
   checks: {
     database: { status: "ok" | "unavailable"; latencyMs?: number };
     providers?: { status: "ok" | "degraded" | "unavailable"; details: Record<string, boolean> };
+    services?: { status: "ok" | "degraded"; details: Record<string, boolean> };
   };
 }
 
@@ -35,6 +37,12 @@ export async function GET() {
     if (!healthy) {
       result.status = "unavailable";
     }
+    const workerFresh = store.serviceHeartbeatIsFresh("worker", 45_000);
+    result.checks.services = {
+      status: workerFresh ? "ok" : "degraded",
+      details: { worker: workerFresh },
+    };
+    if (!workerFresh && result.status !== "unavailable") result.status = "degraded";
   } catch {
     result.status = "unavailable";
   }
@@ -42,27 +50,34 @@ export async function GET() {
   // Check provider availability
   try {
     const providers = new LocalProviderRegistry(
-      process.env.WHISPER_CPP_BINARY,
-      process.env.WHISPER_CPP_MODEL,
-      process.env.PYTHON_BINARY,
-      process.env.PYANNOTE_MODEL,
+      serverConfig.whisperCppBinary,
+      serverConfig.whisperModelPath,
+      serverConfig.pyannotePython,
+      serverConfig.pyannoteModelPath,
+      process.env.WHISPER_CPP_NO_GPU === "1",
+      serverConfig.argosTranslateCommand,
+      serverConfig.googleCloudProject,
+      serverConfig.ttsProvider,
     );
-    const [speech, speakers, translation] = await Promise.all([
+    const [speech, speakers, translation, tts] = await Promise.all([
       providers.speech(),
       providers.speakers(),
       providers.translation(),
+      providers.tts(),
     ]);
+    const ttsReady = tts ? (await tts.getVoiceProfiles()).length > 0 : false;
     result.checks.providers = {
       status: "ok",
       details: {
         speech: speech !== null,
         speakers: speakers !== null,
         translation: translation !== null,
+        tts: ttsReady,
         contentProfile: true, // Always available
       },
     };
     // Mark as degraded if any provider is unavailable
-    const allAvailable = speech !== null && speakers !== null && translation !== null;
+    const allAvailable = speech !== null && speakers !== null && translation !== null && ttsReady;
     if (!allAvailable && result.status !== "unavailable") {
       result.status = "degraded";
     }

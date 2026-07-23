@@ -101,6 +101,8 @@ export interface LocalizationRunRecord {
 export interface VideoRenderJobRecord {
   id: string;
   runId: string;
+  projectId: string;
+  targetLanguage: TargetLanguage;
   sourcePath: string;
   outputPath: string;
   leaseOwner: string;
@@ -127,7 +129,7 @@ interface VerifyUploadInput {
 }
 
 type DatabaseRow = Record<string, SQLInputValue>;
-const currentVideoRendererVersion = "subtitle-quality-v1";
+const currentVideoRendererVersion = "dubbing-quality-v1";
 
 function mapUpload(row: DatabaseRow): UploadSessionRecord {
   return {
@@ -1370,7 +1372,7 @@ export class AnalysisStore {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const row = this.database.prepare(`
-        SELECT vr.*, u.source_path FROM video_render_jobs vr
+        SELECT vr.*, u.source_path, r.project_id, r.target_language_json FROM video_render_jobs vr
         JOIN localization_runs r ON r.id = vr.run_id
         JOIN localization_projects p ON p.id = r.project_id
         JOIN analysis_jobs j ON j.id = p.job_id
@@ -1406,7 +1408,16 @@ export class AnalysisStore {
         };
       });
       this.database.exec("COMMIT");
-      return { id: String(row.id), runId: String(row.run_id), sourcePath: String(row.source_path), outputPath: String(row.output_path), leaseOwner: workerId, segments };
+      return {
+        id: String(row.id),
+        runId: String(row.run_id),
+        projectId: String(row.project_id),
+        targetLanguage: targetLanguageSchema.parse(JSON.parse(String(row.target_language_json))),
+        sourcePath: String(row.source_path),
+        outputPath: String(row.output_path),
+        leaseOwner: workerId,
+        segments,
+      };
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
 
@@ -1449,7 +1460,8 @@ export class AnalysisStore {
         timing: row.timing_json ? JSON.parse(String(row.timing_json)) : null, failureReason: row.failure_reason ? String(row.failure_reason) : null })),
       render: render ? { id: String(render.id), status: String(render.status) as "queued" | "running" | "completed" | "failed", failureReason: render.last_error_code ? String(render.last_error_code) : null,
         previewUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/content` : null,
-        downloadUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/content?download=1` : null } : null,
+        downloadUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/content?download=1` : null,
+        qualityUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/quality` : null } : null,
     };
   }
 

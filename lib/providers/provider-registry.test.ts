@@ -16,4 +16,21 @@ describe("LocalProviderRegistry", () => {
       new LocalProviderRegistry("/missing/whisper-cli", "/missing/model.bin").speech(),
     ).resolves.toBeNull();
   });
+
+  it("registers Google Cloud TTS only when explicitly configured", async () => {
+    const registry = new LocalProviderRegistry(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      "test-project",
+      "google-cloud",
+    );
+    await expect(registry.tts()).resolves.toMatchObject({
+      id: "google-cloud-text-to-speech",
+      version: "rest-v1",
+    });
+  });
 });

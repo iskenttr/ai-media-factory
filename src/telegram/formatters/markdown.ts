@@ -94,13 +94,12 @@ export function formatQueue(stats: QueueStats): string {
 }
 
 export function formatToday(report: DailyReport): string {
-  const costLines = [`*Today's Cost:*`];
-  if (report.costSummary.vertexAI > 0) {
-    costLines.push(`Vertex AI $${report.costSummary.vertexAI.toFixed(2)}`);
-  }
-  if (report.costSummary.total > 0 && report.costSummary.vertexAI !== report.costSummary.total) {
-    costLines.push(`Total $${report.costSummary.total.toFixed(2)}`);
-  }
+  const limit = report.costSummary.modelLimitUsd;
+  const costLines = [
+    "*Autonomous Model Estimate:*",
+    `$${report.costSummary.vertexAI.toFixed(2)}${limit === undefined ? "" : ` / $${limit.toFixed(2)}`}`,
+    "_Cloud VM, disk, network, TTS and other charges are excluded._",
+  ];
 
   const warningLines = report.warnings.length > 0
     ? report.warnings.map((w) => `• ${w}`)
@@ -145,12 +144,19 @@ export function formatErrors(report: ErrorReport): string {
 }
 
 export function formatCost(summary: CostSummary): string {
-  return `*💰 Cost Summary*
+  const limit = summary.modelLimitUsd;
+  const calls = summary.modelCalls;
+  const requestLimit = summary.modelRequestLimit;
+  return `*💰 Autonomous Model Cost Brake*
 
-*Vertex AI:* $${summary.vertexAI.toFixed(2)}
-*Total:* $${summary.total.toFixed(2)}
+*Estimated committed:* $${(summary.modelCommittedUsd ?? summary.vertexAI).toFixed(2)}
+*Reserved in-flight:* $${(summary.modelReservedUsd ?? 0).toFixed(2)}
+*Estimated usage:* $${summary.vertexAI.toFixed(2)}${limit === undefined ? "" : ` / $${limit.toFixed(2)}`}
+*Model calls:* ${calls ?? "unknown"}${requestLimit === undefined ? "" : ` / ${requestLimit}`}
 
-*Note:* Estimates based on current billing cycle.`;
+*Scope:* Autonomous model calls only.
+*Excluded:* VM, disk, network, TTS and all other Google Cloud charges.
+*Authority:* Google Cloud Billing is the invoice source; this local value is a pre-call safety brake.`;
 }
 
 export function formatLogs(logs: string[]): string {

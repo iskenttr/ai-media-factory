@@ -3,10 +3,11 @@ import { z } from "zod";
 export const consentRecordSchema = z.object({
   consentId: z.string().min(1),
   voiceActorName: z.string().min(1),
-  consentedAt: z.string(),
+  consentedAt: z.string().datetime(),
   scope: z.enum(["project", "unrestricted", "time_bounded"]),
-  expiresAt: z.string().nullable(),
-  traceableSourceUrl: z.string().min(1),
+  expiresAt: z.string().datetime().nullable(),
+  projectIds: z.array(z.string().min(1)).optional(),
+  traceableSourceUrl: z.string().url(),
   signatureHash: z.string().min(1),
 });
 
@@ -67,13 +68,30 @@ export interface TtsProvider {
   synthesize(input: TtsSynthesisInput): Promise<TtsSynthesisResult>;
 }
 
-export function validateVoiceProfileConsent(profile: VoiceProfile): void {
+export function validateVoiceProfileConsent(
+  profile: VoiceProfile,
+  context?: { projectId?: string; now?: Date },
+): void {
   if (profile.isCloned) {
     if (!profile.consent) {
       throw new Error("voice_cloning_requires_explicit_consent");
     }
     if (!profile.consent.consentId || !profile.consent.traceableSourceUrl || !profile.consent.signatureHash) {
       throw new Error("incomplete_consent_record_for_cloned_voice");
+    }
+    const now = context?.now ?? new Date();
+    if (profile.consent.scope === "time_bounded" && !profile.consent.expiresAt) {
+      throw new Error("time_bounded_voice_consent_requires_expiry");
+    }
+    if (profile.consent.expiresAt && Date.parse(profile.consent.expiresAt) <= now.getTime()) {
+      throw new Error("voice_consent_expired");
+    }
+    if (
+      profile.consent.scope === "project" &&
+      context?.projectId &&
+      !profile.consent.projectIds?.includes(context.projectId)
+    ) {
+      throw new Error("voice_consent_project_mismatch");
     }
   }
 }

@@ -249,12 +249,22 @@ describe("markdown formatters", () => {
 
   describe("formatCost", () => {
     it("formats cost summary correctly", () => {
-      const summary = { vertexAI: 12.5, total: 15.75 };
+      const summary = {
+        vertexAI: 3.5,
+        total: 3.5,
+        modelCommittedUsd: 3.25,
+        modelReservedUsd: 0.25,
+        modelLimitUsd: 4,
+        modelCalls: 24,
+        modelRequestLimit: 30,
+      };
 
       const result = formatCost(summary);
 
-      expect(result).toContain("$12.50");
-      expect(result).toContain("$15.75");
+      expect(result).toContain("$3.50 / $4.00");
+      expect(result).toContain("24 / 30");
+      expect(result).toContain("VM, disk, network, TTS");
+      expect(result).not.toContain("*Total:*");
     });
   });
 

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { allowedModelFamilies, extractResponse, getDailyModelBudgetStatus, isModelAllowed, isTransientVertexFailure } from "./gemini-broker";
+import { allowedModelFamilies, extractResponse, getDailyModelBudgetStatus, isModelAllowed, isTransientVertexFailure, reserveDailyModelCall } from "./gemini-broker";
 
 describe("daily model budget", () => {
   const originalRequestLimit = process.env.AMF_AGENT_DAILY_REQUEST_LIMIT;
@@ -88,6 +88,49 @@ describe("daily model budget", () => {
         estimatedCostUsd: 4,
         exhausted: true,
         reason: "daily_model_cost_limit_exhausted",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reserves the maximum call cost before a request is sent", async () => {
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = "30";
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = "4";
+    const root = await createUsageRoot([]);
+    try {
+      const reservation = await reserveDailyModelCall(root, {
+        taskId: "TASK-RESERVE",
+        estimatedPromptTokens: 10_000,
+        maximumOutputTokens: 8_192,
+      }, new Date("2026-07-23T20:00:00Z"));
+      expect(reservation.reservedCostUsd).toBeGreaterThan(0);
+      await expect(getDailyModelBudgetStatus(root, new Date("2026-07-23T20:01:00Z"))).resolves.toMatchObject({
+        calls: 1,
+        committedCostUsd: 0,
+        reservedCostUsd: reservation.reservedCostUsd,
+        estimatedCostUsd: reservation.reservedCostUsd,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a projected last call that would cross the 4 USD cap", async () => {
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = "30";
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = "4";
+    const root = await createUsageRoot([
+      { taskId: "PRIOR", timestamp: "2026-07-23T19:00:00.000Z", estimatedCostUsd: 3.95 },
+    ]);
+    try {
+      await expect(reserveDailyModelCall(root, {
+        taskId: "TASK-BLOCKED",
+        estimatedPromptTokens: 10_000,
+        maximumOutputTokens: 8_192,
+      }, new Date("2026-07-23T20:00:00Z"))).rejects.toThrow("daily_model_cost_limit_exhausted");
+      await expect(getDailyModelBudgetStatus(root, new Date("2026-07-23T20:01:00Z"))).resolves.toMatchObject({
+        calls: 1,
+        estimatedCostUsd: 3.95,
       });
     } finally {
       await rm(root, { recursive: true, force: true });

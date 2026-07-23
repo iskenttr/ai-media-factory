@@ -72,4 +72,33 @@ describe("TTS contracts and validation", () => {
     expect(() => voiceProfileSchema.parse(profile)).not.toThrow();
     expect(() => validateVoiceProfileConsent(profile)).not.toThrow();
   });
+
+  it("rejects expired and wrong-project cloned voice consent", () => {
+    const profile = voiceProfileSchema.parse({
+      profileId: "clone-1",
+      name: "Cloned Speaker",
+      gender: "male",
+      locale: "tr-TR",
+      tags: ["cloned"],
+      isCloned: true,
+      consent: {
+        consentId: "consent-id-uuid",
+        voiceActorName: "Actor Name",
+        consentedAt: "2026-01-01T00:00:00Z",
+        scope: "project",
+        expiresAt: "2026-08-01T00:00:00Z",
+        projectIds: ["project-a"],
+        traceableSourceUrl: "https://consent.example/provenance",
+        signatureHash: "sig-hash",
+      },
+    });
+    expect(() => validateVoiceProfileConsent(profile, {
+      projectId: "project-b",
+      now: new Date("2026-07-24T00:00:00Z"),
+    })).toThrow("voice_consent_project_mismatch");
+    expect(() => validateVoiceProfileConsent(profile, {
+      projectId: "project-a",
+      now: new Date("2026-08-02T00:00:00Z"),
+    })).toThrow("voice_consent_expired");
+  });
 });

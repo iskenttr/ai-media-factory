@@ -17,6 +17,12 @@ export const serverConfig = {
   pyannotePython: process.env.PYANNOTE_PYTHON,
   pyannoteModelPath: process.env.PYANNOTE_MODEL_PATH,
   argosTranslateCommand: process.env.ARGOS_TRANSLATE_COMMAND ?? path.join(projectRoot, "scripts", "argos-translate-docker"),
+  googleCloudProject: process.env.GOOGLE_CLOUD_PROJECT,
+  ttsProvider: process.env.AMF_TTS_PROVIDER,
+  ttsLocales: process.env.AMF_TTS_LOCALES ?? "tr-TR",
+  sherpaOnnxPython: process.env.SHERPA_ONNX_PYTHON,
+  sherpaOnnxSegmentationModel: process.env.SHERPA_ONNX_SEGMENTATION_MODEL,
+  sherpaOnnxEmbeddingModel: process.env.SHERPA_ONNX_EMBEDDING_MODEL,
 } as const;
 
 /**
