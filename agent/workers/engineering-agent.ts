@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import fg from "fast-glob";
 import type { EngineeringTask } from "../tasks/schema";
@@ -8,6 +8,41 @@ import { requestGeminiPatch } from "./gemini-broker";
 
 const GLOB_PATTERN = /[*?[\]]/;
 const MAX_CONTEXT_SIZE = 250_000;
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".json", ".md"];
+
+function isSourceFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return SOURCE_EXTENSIONS.includes(ext);
+}
+
+async function isDirectory(filePath: string): Promise<boolean> {
+  try {
+    const stats = await stat(filePath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function enumerateDirectoryFiles(dirPath: string, worktree: string, taskId: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        const nestedFiles = await enumerateDirectoryFiles(fullPath, worktree, taskId);
+        files.push(...nestedFiles);
+      } else if (entry.isFile() && isSourceFile(entry.name)) {
+        const relativePath = path.relative(worktree, fullPath).replace(/\\/g, "/");
+        files.push(relativePath);
+      }
+    }
+  } catch (error) {
+    console.error(`[${taskId}] Error enumerating directory ${dirPath}:`, error);
+  }
+  return files;
+}
 
 export function isGlobPattern(requested: string): boolean {
   return GLOB_PATTERN.test(requested);
@@ -103,9 +138,22 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
   const context: string[] = [];
   let total = 0;
   for (const requested of task.execution.context_paths) {
-    const files = isGlobPattern(requested)
-      ? await expandGlobPattern(requested, worktree, task.task_id)
-      : [requested];
+    let files: string[];
+    if (isGlobPattern(requested)) {
+      files = await expandGlobPattern(requested, worktree, task.task_id);
+    } else {
+      // Check if it's a directory after validation
+      const validatedPath = assertAllowedPath(requested, task.allowed_paths, task.forbidden_paths);
+      const absolutePath = assertWithinRoot(worktree, path.join(worktree, validatedPath));
+      if (await isDirectory(absolutePath)) {
+        files = await enumerateDirectoryFiles(absolutePath, worktree, task.task_id);
+        if (files.length === 0) {
+          console.log(`[${task.task_id}] Directory has no source files: ${requested}`);
+        }
+      } else {
+        files = [validatedPath];
+      }
+    }
 
     for (const file of files) {
       try {
@@ -118,6 +166,8 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           console.error(`[${task.task_id}] Context file not found: ${file}, skipping`);
+        } else if ((error as NodeJS.ErrnoException).code === "EISDIR") {
+          console.error(`[${task.task_id}] Context path is a directory (should not reach here): ${file}, skipping`);
         } else if ((error as Error).message.startsWith("path_not_allowed_by_task")) {
           throw new Error(`task_context_path_not_allowed:${file}`);
         } else {
