@@ -10,7 +10,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
-    // Local model source trees are runtime tooling, not application test suites.
-    exclude: [...configDefaults.exclude, "work/**"],
+    // Local model source trees and generated git worktrees are runtime tooling,
+    // not additional copies of the application test suite.
+    exclude: [...configDefaults.exclude, "work/**", "worktrees/**"],
   },
 });

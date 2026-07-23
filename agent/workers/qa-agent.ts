@@ -5,16 +5,17 @@ import { isDevelopmentMode } from "../tasks/schema";
 import { executeSandboxedCommand, type CommandResult } from "./command-executor";
 
 /**
- * Bootstrap node_modules in a worktree if they are missing.
- * This is needed because worktrees don't share node_modules with the main repository.
+ * Bootstrap node_modules only when neither the worktree nor the repository root
+ * already provides dependencies. The sandbox mounts root node_modules into each
+ * generated worktree, so reinstalling in that common case is redundant.
  * Returns true if dependencies were installed, false otherwise.
  * Only performed in development mode where npm install is allowed.
  */
 export async function bootstrapWorktreeDependencies(root: string, worktree: string, taskId: string): Promise<boolean> {
   const nodeModulesPath = path.join(worktree, "node_modules");
+  const sharedNodeModulesPath = path.join(root, "node_modules");
 
-  // Check if node_modules already exists
-  if (existsSync(nodeModulesPath)) {
+  if (existsSync(nodeModulesPath) || existsSync(sharedNodeModulesPath)) {
     return false;
   }
 
