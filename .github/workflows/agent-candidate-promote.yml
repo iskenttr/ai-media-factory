@@ -122,6 +122,10 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Install real-media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       - run: npm ci --ignore-scripts
       - run: npm run check
 
