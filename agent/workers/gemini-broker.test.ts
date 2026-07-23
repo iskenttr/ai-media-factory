@@ -1,6 +1,110 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
-import { allowedModelFamilies, extractResponse, isModelAllowed, isTransientVertexFailure } from "./gemini-broker";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { allowedModelFamilies, extractResponse, getDailyModelBudgetStatus, isModelAllowed, isTransientVertexFailure } from "./gemini-broker";
+
+describe("daily model budget", () => {
+  const originalRequestLimit = process.env.AMF_AGENT_DAILY_REQUEST_LIMIT;
+  const originalCostLimit = process.env.AMF_AGENT_DAILY_COST_LIMIT_USD;
+
+  afterEach(() => {
+    if (originalRequestLimit === undefined) {
+      delete process.env.AMF_AGENT_DAILY_REQUEST_LIMIT;
+    } else {
+      process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = originalRequestLimit;
+    }
+    if (originalCostLimit === undefined) {
+      delete process.env.AMF_AGENT_DAILY_COST_LIMIT_USD;
+    } else {
+      process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = originalCostLimit;
+    }
+  });
+
+  async function createUsageRoot(entries: unknown[]) {
+    const root = await mkdtemp(path.join(tmpdir(), "gemini-budget-"));
+    await mkdir(path.join(root, "agent/state"), { recursive: true });
+    await writeFile(
+      path.join(root, "agent/state/model-usage.jsonl"),
+      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+    return root;
+  }
+
+  it("reports remaining capacity for the configured 30 request and 4 USD limits", async () => {
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = "30";
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = "4";
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      taskId: `TASK-${index}`,
+      timestamp: `2026-07-23T${String(index).padStart(2, "0")}:00:00.000Z`,
+      estimatedCostUsd: 0.13,
+    }));
+    const root = await createUsageRoot(entries);
+    try {
+      const status = await getDailyModelBudgetStatus(root, new Date("2026-07-23T20:00:00Z"));
+      expect(status).toMatchObject({
+        calls: 10,
+        requestLimit: 30,
+        costLimitUsd: 4,
+        exhausted: false,
+        reason: null,
+      });
+      expect(status.estimatedCostUsd).toBeCloseTo(1.3);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses at the configured daily request limit", async () => {
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = "30";
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = "4";
+    const entries = Array.from({ length: 30 }, (_, index) => ({
+      taskId: `TASK-${index}`,
+      timestamp: "2026-07-23T10:00:00.000Z",
+      estimatedCostUsd: 0.01,
+    }));
+    const root = await createUsageRoot(entries);
+    try {
+      await expect(getDailyModelBudgetStatus(root, new Date("2026-07-23T20:00:00Z"))).resolves.toMatchObject({
+        calls: 30,
+        exhausted: true,
+        reason: "daily_model_request_limit_exhausted",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses at the configured daily cost limit", async () => {
+    process.env.AMF_AGENT_DAILY_REQUEST_LIMIT = "30";
+    process.env.AMF_AGENT_DAILY_COST_LIMIT_USD = "4";
+    const root = await createUsageRoot([
+      { taskId: "TASK-1", timestamp: "2026-07-23T10:00:00.000Z", estimatedCostUsd: 2 },
+      { taskId: "TASK-2", timestamp: "2026-07-23T11:00:00.000Z", estimatedCostUsd: 2 },
+    ]);
+    try {
+      await expect(getDailyModelBudgetStatus(root, new Date("2026-07-23T20:00:00Z"))).resolves.toMatchObject({
+        estimatedCostUsd: 4,
+        exhausted: true,
+        reason: "daily_model_cost_limit_exhausted",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the usage ledger is malformed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gemini-budget-invalid-"));
+    await mkdir(path.join(root, "agent/state"), { recursive: true });
+    await writeFile(path.join(root, "agent/state/model-usage.jsonl"), "{not-json}\n");
+    try {
+      await expect(getDailyModelBudgetStatus(root)).rejects.toThrow("model_usage_ledger_invalid:line_1");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // allowedModelFamilies

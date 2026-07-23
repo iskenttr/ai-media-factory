@@ -243,7 +243,7 @@ export function wasTaskCompleted(state: BacklogState, taskTitle: string): boolea
 export function hasExceededRetryLimit(state: BacklogState, taskTitle: string): boolean {
   const normalizedTitle = normalizeTaskTitle(taskTitle);
   const retryCount = state.failedTaskIds.get(normalizedTitle) || 0;
-  return retryCount >= 1; // Only retry once
+  return retryCount >= 2; // One initial attempt plus one retry
 }
 
 /**
@@ -301,14 +301,14 @@ export const TASK_SUGGESTIONS: TaskSuggestion[] = [
     title: "Add deterministic dubbed-audio quality metrics",
     objective: "Implement deterministic quality measurements for dubbed audio covering integrated loudness, true peak and clipping, silence ratio, and duration mismatch. Use generated synthetic fixtures only and return structured diagnostics that can be compared in tests.",
     allowedPaths: ["lib/server/**/*.ts", "lib/localization/**/*.ts", "agent/evaluators/**/*.ts"],
-    testCommands: [["npm", "test", "--", "dubbing"]],
+    testCommands: [["npm", "test", "--", "dubbed-audio-quality"]],
   },
   {
     priority: "voice_dubbing",
     category: "source_code",
     title: "Add Turkish pronunciation normalization for TTS",
     objective: "Add a conservative Turkish TTS text-normalization stage for common acronyms, numbers, dates, abbreviations, and punctuation pauses. Preserve the original localized text, expose normalization decisions for review, and cover ambiguous inputs with tests.",
-    allowedPaths: ["lib/localization/**/*.ts", "lib/**/*.ts"],
+    allowedPaths: ["lib/localization/**/*.ts", "lib/text-utils.ts", "lib/text-utils.test.ts"],
     testCommands: [["npm", "test", "--", "text-utils"]],
   },
   {
@@ -599,7 +599,7 @@ export async function createTaskFromSuggestion(
     execution: {
       kind: "gemini_patch",
       context_paths: contextPaths, // Use resolved existing paths
-      repair_strategy: "none",
+      repair_strategy: "gemini_patch_review",
     },
   };
 }
