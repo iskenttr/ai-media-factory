@@ -100,6 +100,16 @@ describe("git-gateway idempotency", () => {
     expect(branches).toContain(result.branch);
   });
 
+  it("preserves the first character of tracked paths in porcelain status", async () => {
+    const { inspectWorktree } = await gateway();
+    await writeFile(path.join(repoRoot, "README.md"), "changed\n");
+
+    const inspection = await inspectWorktree(agentRoot, TASK_ID, repoRoot);
+
+    expect(inspection.files).toEqual(["README.md"]);
+    expect(inspection.patch).toContain("diff --git a/README.md b/README.md");
+  });
+
   it("handles stale branch (no worktree dir): cleans and re-creates", async () => {
     const { createTaskWorktree } = await gateway();
     const commit = baseCommit();
