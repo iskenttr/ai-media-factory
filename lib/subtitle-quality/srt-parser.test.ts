@@ -14,6 +14,15 @@ describe("SRT Timestamp Parser", () => {
     expect(parseSrtTimestamp("99:59:59.999")).toBe(359999999);
   });
 
+  it("handles regression for GitHub issue with comma and period decimal separators", () => {
+    const commaTimestamp = "00:00:00,000";
+    const periodTimestamp = "00:00:00.000";
+    expect(parseSrtTimestamp(commaTimestamp)).toBe(0);
+    expect(parseSrtTimestamp(periodTimestamp)).toBe(0);
+    expect(parseSrtTimestamp("00:01:20,005")).toBe(80005);
+    expect(parseSrtTimestamp("00:01:20.005")).toBe(80005);
+  });
+
   it("handles whitespace padding", () => {
     expect(parseSrtTimestamp("  00:01:20,500  ")).toBe(80500);
   });
