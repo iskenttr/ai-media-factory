@@ -1,0 +1,32 @@
+name: Agent Candidate Signal
+
+on:
+  push:
+    branches:
+      - "agent/**"
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate candidate namespace
+        env:
+          HEAD_BRANCH: ${{ github.ref_name }}
+        run: |
+          case "$HEAD_BRANCH" in
+            agent/*) ;;
+            *) echo "candidate_branch_namespace_invalid"; exit 1 ;;
+          esac
+      - name: Record immutable candidate
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          case "$HEAD_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "candidate_head_invalid"; exit 1 ;;
+          esac
+          printf 'candidate=%s\n' "$HEAD_SHA"
