@@ -197,4 +197,49 @@ describe("AnalysisStore", () => {
     expect(revisions?.map((revision) => revision.version)).toEqual([3, 2, 1]);
     expect(revisions?.find((revision) => revision.isActive)).toMatchObject({ version: 2, translatedText: "Kullanıcı metni" });
   });
+
+  it("assigns deterministic voice IDs and respects user overrides in getLocalizationRunData", () => {
+    const jobId = createJob();
+    const languageEvent = store.appendEvent(jobId, 1, "language_detected", {
+      availability: "available", language: { code: "en", name: "English" },
+    }, `${jobId}:1:language_detected`);
+    const transcriptId = store.saveSourceTranscript({
+      jobId,
+      attempt: 1,
+      sourceEventId: languageEvent.eventId,
+      speech: {
+        transcript: "Hello there",
+        segments: [
+          { startSeconds: 0, endSeconds: 2, text: "Hello there" },
+          { startSeconds: 2, endSeconds: 4, text: "General Kenobi" }
+        ],
+        language: { code: "en", name: "English" },
+        providerId: "test-provider",
+        providerVersion: "1",
+      },
+      speakerSegments: [
+        { speakerId: "speaker_1", start: 0, end: 2 },
+        { speakerId: "speaker_2", start: 2, end: 4 }
+      ],
+    });
+    const projectId = store.ensureLocalizationProject(jobId, transcriptId);
+    store.completeJob(jobId, "ready");
+    store.selectTargetLanguage(projectId, { code: "tr", name: "Turkish" });
+    store.prepareLocalizationSetup(projectId);
+    const runId = store.createLocalizationRun(projectId);
+    
+    const runData = store.getLocalizationRunForOwner(runId, "owner-hash");
+    expect(runData).not.toBeNull();
+    expect(runData!.segments).toHaveLength(2);
+    const voice1 = runData!.segments[0].voiceId;
+    const voice2 = runData!.segments[1].voiceId;
+    expect(voice1).toBeDefined();
+    expect(voice2).toBeDefined();
+    expect(voice1).toBe(store.getLocalizationRunForOwner(runId, "owner-hash")!.segments[0].voiceId);
+
+    store.saveVoiceOverride(projectId, "speaker_1", "custom_tr_voice");
+    const updatedRunData = store.getLocalizationRunForOwner(runId, "owner-hash");
+    expect(updatedRunData!.segments[0].voiceId).toBe("custom_tr_voice");
+    expect(updatedRunData!.segments[1].voiceId).toBe(voice2);
+  });
 });

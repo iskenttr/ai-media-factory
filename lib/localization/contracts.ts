@@ -89,6 +89,7 @@ export interface LocalizedSegmentData {
   revisionCount: number;
   timing: TimingAssessment | null;
   failureReason: string | null;
+  voiceId?: string | null;
 }
 
 export interface LocalizationRunData {

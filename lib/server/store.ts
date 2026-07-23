@@ -14,6 +14,7 @@ import { localizationPlanSchema, type LocalizationPlan } from "@/lib/analysis/lo
 import type { SpeechObservation } from "@/lib/analysis/observations";
 import { alignSegmentToSpeakers } from "@/lib/subtitle-quality/alignment";
 import { suggestionConfidenceSchema, suggestionStatusSchema, suggestionTypeSchema, targetLanguageSchema, transcriptPatchSchema, type StudioSuggestion, type TargetLanguage, type TranscriptPatch } from "@/lib/studio/contracts";
+import { assignVoiceToSpeaker } from "@/lib/localization/voice-assignment";
 import { deriveStudioSuggestions } from "@/lib/studio/suggestions";
 import { translationRunStatusSchema, type LocalizedSegmentData, type LocalizationEvent, type LocalizationRunData, type TranslationContextSegment, type TranslationMode, type TranslationProviderResult, type TranslationRevisionData } from "@/lib/localization/contracts";
 
@@ -104,7 +105,7 @@ export interface VideoRenderJobRecord {
   sourcePath: string;
   outputPath: string;
   leaseOwner: string;
-  segments: Array<{ startMs: number; endMs: number; text: string; speakerId?: string; words?: Array<{ text: string; startMs: number; endMs: number }> }>;
+  segments: Array<{ startMs: number; endMs: number; text: string; speakerId?: string; voiceId?: string; words?: Array<{ text: string; startMs: number; endMs: number }> }>;
 }
 
 interface CreateUploadInput {
@@ -459,6 +460,11 @@ export class AnalysisStore {
     }
     try {
       this.database.exec("ALTER TABLE video_render_jobs ADD COLUMN renderer_version TEXT NOT NULL DEFAULT 'legacy'");
+    } catch {
+      // Existing databases already have this additive migration.
+    }
+    try {
+      this.database.exec("ALTER TABLE localization_projects ADD COLUMN voice_assignments_json TEXT");
     } catch {
       // Existing databases already have this additive migration.
     }
@@ -960,6 +966,23 @@ export class AnalysisStore {
       .run(JSON.stringify(validLanguage), now, projectId);
   }
 
+  saveVoiceOverride(projectId: string, speakerId: string, voiceId: string) {
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const project = this.database.prepare("SELECT voice_assignments_json FROM localization_projects WHERE id = ?").get(projectId) as DatabaseRow | undefined;
+      if (!project) throw new Error("Project not found");
+      const current = project.voice_assignments_json ? JSON.parse(String(project.voice_assignments_json)) as Record<string, string> : {};
+      current[speakerId] = voiceId;
+      this.database.prepare("UPDATE localization_projects SET voice_assignments_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(current), now, projectId);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   prepareLocalizationSetup(projectId: string) {
     const now = new Date().toISOString();
     const result = this.database.prepare(`
@@ -1370,7 +1393,7 @@ export class AnalysisStore {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const row = this.database.prepare(`
-        SELECT vr.*, u.source_path FROM video_render_jobs vr
+        SELECT vr.*, u.source_path, r.project_id FROM video_render_jobs vr
         JOIN localization_runs r ON r.id = vr.run_id
         JOIN localization_projects p ON p.id = r.project_id
         JOIN analysis_jobs j ON j.id = p.job_id
@@ -1379,6 +1402,9 @@ export class AnalysisStore {
         ORDER BY vr.created_at ASC LIMIT 1
       `).get(nowIso) as DatabaseRow | undefined;
       if (!row) { this.database.exec("COMMIT"); return null; }
+      const project = this.database.prepare("SELECT target_language_json, voice_assignments_json FROM localization_projects WHERE id = ?").get(String(row.project_id)) as DatabaseRow;
+      const targetLanguage = targetLanguageSchema.parse(JSON.parse(String(project.target_language_json)));
+      const userOverrides = project.voice_assignments_json ? JSON.parse(String(project.voice_assignments_json)) as Record<string, string> : {};
       this.database.prepare(`UPDATE video_render_jobs SET status = 'running', lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE id = ?`)
         .run(workerId, new Date(now.getTime() + leaseMs).toISOString(), nowIso, String(row.id));
       const segments = (this.database.prepare(`
@@ -1395,10 +1421,13 @@ export class AnalysisStore {
         WHERE lt.run_id = ? ORDER BY ls.sequence ASC
       `).all(String(row.run_id)) as DatabaseRow[]).map((segment) => {
         const patch = segment.patch_json ? transcriptPatchSchema.parse(JSON.parse(String(segment.patch_json))) : null;
+        const speakerId = patch?.speakerId ?? (segment.speaker_id ? String(segment.speaker_id) : undefined);
+        const voiceId = speakerId ? assignVoiceToSpeaker(speakerId, targetLanguage.code, userOverrides) : undefined;
         return {
           startMs: patch?.startMs ?? Number(segment.start_ms),
           endMs: patch?.endMs ?? Number(segment.end_ms),
-          speakerId: patch?.speakerId ?? (segment.speaker_id ? String(segment.speaker_id) : undefined),
+          speakerId,
+          voiceId,
           words: segment.word_timestamps_json ? (JSON.parse(String(segment.word_timestamps_json)) as Array<{ text: string; startSeconds: number; endSeconds: number }>).map((word) => ({
             text: word.text, startMs: Math.round(word.startSeconds * 1000), endMs: Math.round(word.endSeconds * 1000),
           })) : undefined,
@@ -1431,22 +1460,40 @@ export class AnalysisStore {
 
   private getLocalizationRunData(runId: string): LocalizationRunData {
     const run = this.database.prepare(`SELECT * FROM localization_runs WHERE id = ?`).get(runId) as DatabaseRow;
+    const project = this.database.prepare("SELECT id, target_language_json, voice_assignments_json FROM localization_projects WHERE id = ?").get(String(run.project_id)) as DatabaseRow;
+    const targetLanguage = targetLanguageSchema.parse(JSON.parse(String(project.target_language_json)));
+    const userOverrides = project.voice_assignments_json ? JSON.parse(String(project.voice_assignments_json)) as Record<string, string> : {};
     const rows = this.database.prepare(`
       SELECT ls.source_segment_id, ls.status, ls.timing_json, ls.failure_reason, tr.translated_text, tr.version, tr.origin,
+        ts.speaker_id, c.patch_json,
         (SELECT COUNT(*) FROM translation_revisions all_revisions WHERE all_revisions.localized_segment_id = ls.id) AS revision_count
       FROM localized_segments ls JOIN localized_transcripts lt ON lt.id = ls.localized_transcript_id
+      JOIN transcript_segments ts ON ts.id = ls.source_segment_id
       LEFT JOIN translation_revisions tr ON tr.id = ls.active_revision_id
+      LEFT JOIN transcript_corrections c ON c.id = (
+        SELECT latest.id FROM transcript_corrections latest
+        WHERE latest.project_id = ? AND latest.segment_id = ts.id
+        ORDER BY latest.version DESC LIMIT 1
+      )
       WHERE lt.run_id = ? ORDER BY ls.sequence ASC
-    `).all(runId) as DatabaseRow[];
+    `).all(String(project.id), runId) as DatabaseRow[];
     const render = this.database.prepare(`SELECT id, status, last_error_code FROM video_render_jobs WHERE run_id = ? AND renderer_version = ? ORDER BY created_at DESC LIMIT 1`).get(runId, currentVideoRendererVersion) as DatabaseRow | undefined;
     return {
-      id: runId, status: translationRunStatusSchema.parse(String(run.status)), targetLanguage: targetLanguageSchema.parse(JSON.parse(String(run.target_language_json))),
+      id: runId, status: translationRunStatusSchema.parse(String(run.status)), targetLanguage,
       translatedCount: rows.filter((row) => String(row.status) === "translated").length, totalCount: rows.length,
-      segments: rows.map((row): LocalizedSegmentData => ({ sourceSegmentId: String(row.source_segment_id), translatedText: row.translated_text ? String(row.translated_text) : null,
-        status: String(row.status) as LocalizedSegmentData["status"], revision: row.version === null ? null : Number(row.version),
-        revisionOrigin: row.origin ? String(row.origin) as LocalizedSegmentData["revisionOrigin"] : null,
-        revisionCount: Number(row.revision_count ?? 0),
-        timing: row.timing_json ? JSON.parse(String(row.timing_json)) : null, failureReason: row.failure_reason ? String(row.failure_reason) : null })),
+      segments: rows.map((row): LocalizedSegmentData => {
+        const patch = row.patch_json ? transcriptPatchSchema.parse(JSON.parse(String(row.patch_json))) : null;
+        const speakerId = patch?.speakerId ?? String(row.speaker_id ?? "speaker_1");
+        const voiceId = assignVoiceToSpeaker(speakerId, targetLanguage.code, userOverrides);
+        return {
+          sourceSegmentId: String(row.source_segment_id), translatedText: row.translated_text ? String(row.translated_text) : null,
+          status: String(row.status) as LocalizedSegmentData["status"], revision: row.version === null ? null : Number(row.version),
+          revisionOrigin: row.origin ? String(row.origin) as LocalizedSegmentData["revisionOrigin"] : null,
+          revisionCount: Number(row.revision_count ?? 0),
+          timing: row.timing_json ? JSON.parse(String(row.timing_json)) : null, failureReason: row.failure_reason ? String(row.failure_reason) : null,
+          voiceId
+        };
+      }),
       render: render ? { id: String(render.id), status: String(render.status) as "queued" | "running" | "completed" | "failed", failureReason: render.last_error_code ? String(render.last_error_code) : null,
         previewUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/content` : null,
         downloadUrl: String(render.status) === "completed" ? `/api/video-renders/${String(render.id)}/content?download=1` : null } : null,
