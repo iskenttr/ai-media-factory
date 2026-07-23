@@ -1,0 +1,174 @@
+name: Agent Candidate Promote
+
+on:
+  workflow_run:
+    workflows:
+      - Agent Candidate Signal
+    types:
+      - completed
+
+concurrency:
+  group: agent-candidate-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      pull_number: ${{ steps.pr.outputs.pull_number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+    steps:
+      - name: Validate candidate and open pull request
+        id: pr
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = context.payload.workflow_run;
+            const head = run.head_branch;
+            const headSha = run.head_sha;
+            const base = "openhands/autonomous-integration";
+            if (!/^agent\/[a-z0-9][a-z0-9/-]*$/.test(head)) {
+              core.setFailed(`candidate_branch_invalid:${head}`);
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(headSha)) {
+              core.setFailed("candidate_sha_invalid");
+              return;
+            }
+            const comparison = await github.rest.repos.compareCommitsWithBasehead({
+              owner, repo, basehead: `${base}...${head}`,
+            });
+            if (comparison.data.status !== "ahead" || comparison.data.ahead_by !== 1) {
+              core.setFailed(`candidate_history_invalid:${comparison.data.status}:${comparison.data.ahead_by}`);
+              return;
+            }
+            const files = comparison.data.files ?? [];
+            const denied = [
+              /^\.github\//,
+              /^agent\//,
+              /^deploy\//,
+              /^production\//,
+              /^secrets\//,
+              /^storage\//,
+              /^docs\/AI_MEDIA_FACTORY_CONSTITUTION\.md$/,
+              /^package(?:-lock)?\.json$/,
+              /^\.env(?:\.|$)/,
+            ];
+            const deniedFile = files.find((file) => denied.some((pattern) => pattern.test(file.filename)));
+            const changedLines = files.reduce(
+              (total, file) => total + Number(file.additions ?? 0) + Number(file.deletions ?? 0),
+              0,
+            );
+            if (deniedFile) {
+              core.setFailed(`candidate_protected_path:${deniedFile.filename}`);
+              return;
+            }
+            if (files.length === 0 || files.length > 25 || changedLines > 2500) {
+              core.setFailed(`candidate_diff_limit:${files.length}:${changedLines}`);
+              return;
+            }
+            const existing = await github.rest.pulls.list({
+              owner, repo, state: "open", head: `${owner}:${head}`, base,
+            });
+            let pull = existing.data[0];
+            if (!pull) {
+              const created = await github.rest.pulls.create({
+                owner,
+                repo,
+                head,
+                base,
+                title: `agent: ${head.slice("agent/".length)}`,
+                body: [
+                  "Autonomously accepted candidate.",
+                  "",
+                  `Immutable head: \`${headSha}\``,
+                  `Files: ${files.length}; changed lines: ${changedLines}.`,
+                  "",
+                  "This PR is eligible only for the trusted integration gate. Production promotion remains manual.",
+                ].join("\n"),
+              });
+              pull = created.data;
+            }
+            if (pull.head.sha !== headSha) {
+              core.setFailed(`candidate_pull_head_moved:${pull.head.sha}:${headSha}`);
+              return;
+            }
+            core.setOutput("pull_number", String(pull.number));
+            core.setOutput("head_sha", headSha);
+
+  check:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out immutable candidate without credentials
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: npm
+      - name: Install real-media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+
+  merge:
+    needs:
+      - prepare
+      - check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the verified immutable head into integration
+        uses: actions/github-script@v8
+        env:
+          PULL_NUMBER: ${{ needs.prepare.outputs.pull_number }}
+          EXPECTED_HEAD: ${{ needs.prepare.outputs.head_sha }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const expectedHead = process.env.EXPECTED_HEAD;
+            const { data: pull } = await github.rest.pulls.get({
+              owner, repo, pull_number: pullNumber,
+            });
+            if (pull.state !== "open" || pull.base.ref !== "openhands/autonomous-integration") {
+              core.setFailed(`candidate_pull_state_invalid:${pull.state}:${pull.base.ref}`);
+              return;
+            }
+            if (!pull.head.ref.startsWith("agent/") || pull.head.sha !== expectedHead) {
+              core.setFailed(`candidate_pull_head_invalid:${pull.head.ref}:${pull.head.sha}`);
+              return;
+            }
+            const merged = await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: pullNumber,
+              sha: expectedHead,
+              merge_method: "squash",
+              commit_title: `${pull.title} (#${pull.number})`,
+            });
+            if (!merged.data.merged) {
+              core.setFailed(`candidate_merge_failed:${merged.data.message}`);
+            }
