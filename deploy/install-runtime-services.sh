@@ -22,14 +22,14 @@ if ! getent group "$runtime_group" >/dev/null 2>&1; then
   groupadd --system "$runtime_group"
 fi
 if ! id "$runtime_user" >/dev/null 2>&1; then
-  useradd --system --gid "$runtime_group" --home-dir /var/tmp/amf-runtime \
+  useradd --system --gid "$runtime_group" --home-dir /var/lib/ai-media-factory \
     --no-create-home --shell /usr/sbin/nologin "$runtime_user"
 fi
 
 install -d -o root -g "$runtime_group" -m 0750 /etc/ai-media-factory
 install -d -o "$runtime_user" -g "$runtime_group" -m 0750 \
   /var/lib/ai-media-factory /var/lib/ai-media-factory/db /var/lib/ai-media-factory/uploads \
-  /var/lib/ai-media-factory/work /var/lib/ai-media-factory/renders /var/tmp/amf-runtime
+  /var/lib/ai-media-factory/work /var/lib/ai-media-factory/renders
 install -d -o root -g "$runtime_group" -m 0750 /var/lib/ai-media-factory-models
 
 if [ ! -f /etc/ai-media-factory/runtime.env ]; then
