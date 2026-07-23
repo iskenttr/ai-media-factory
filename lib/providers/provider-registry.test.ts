@@ -7,6 +7,7 @@ describe("LocalProviderRegistry", () => {
     const registry = new LocalProviderRegistry(undefined, undefined);
     await expect(registry.speech()).resolves.toBeNull();
     await expect(registry.speakers()).resolves.toBeNull();
+    await expect(registry.tts()).resolves.toBeNull();
     expect(registry.contentProfile().id).toBe("deterministic-evidence");
   });
 
