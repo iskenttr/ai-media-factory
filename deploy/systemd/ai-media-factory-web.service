@@ -12,10 +12,10 @@ WorkingDirectory=/opt/ai-media-factory-runtime/current
 Environment=NODE_ENV=production
 Environment=HOSTNAME=127.0.0.1
 Environment=PORT=3000
-Environment=HOME=/var/tmp/amf-runtime
+Environment=HOME=/var/lib/ai-media-factory
 Environment=NEXT_TELEMETRY_DISABLED=1
 EnvironmentFile=/etc/ai-media-factory/runtime.env
-ExecStart=/opt/node24/bin/npm run start
+ExecStart=/opt/node24/bin/npm run start -- --hostname 127.0.0.1 --port 3000
 Restart=always
 RestartSec=5
 TimeoutStartSec=90
@@ -35,8 +35,8 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/ai-media-factory /var/tmp/amf-runtime
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/var/lib/ai-media-factory
 InaccessiblePaths=/opt/ai-media-factory-autonomous /root/.ssh /home
 CapabilityBoundingSet=
 AmbientCapabilities=

@@ -10,7 +10,7 @@ User=amf-runtime
 Group=amf-runtime
 WorkingDirectory=/opt/ai-media-factory-runtime/current
 Environment=NODE_ENV=production
-Environment=HOME=/var/tmp/amf-runtime
+Environment=HOME=/var/lib/ai-media-factory
 Environment=NEXT_TELEMETRY_DISABLED=1
 EnvironmentFile=/etc/ai-media-factory/runtime.env
 ExecStart=/opt/node24/bin/npm run worker
@@ -33,8 +33,8 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/ai-media-factory /var/tmp/amf-runtime
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/var/lib/ai-media-factory
 InaccessiblePaths=/opt/ai-media-factory-autonomous /root/.ssh /home
 CapabilityBoundingSet=
 AmbientCapabilities=
