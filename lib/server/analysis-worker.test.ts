@@ -15,6 +15,8 @@ describe("analysis worker without an external model", () => {
     }
     delete process.env.AMF_STORAGE_DIR;
     delete process.env.AMF_DATABASE_PATH;
+    delete process.env.FFMPEG_PATH;
+    delete process.env.FFPROBE_PATH;
     delete process.env.WHISPER_CPP_BIN;
     delete process.env.WHISPER_MODEL_PATH;
     vi.resetModules();
@@ -24,8 +26,8 @@ describe("analysis worker without an external model", () => {
     directory = await mkdtemp(path.join(os.tmpdir(), "amf-worker-"));
     process.env.AMF_STORAGE_DIR = directory;
     process.env.AMF_DATABASE_PATH = path.join(directory, "events.sqlite");
-    process.env.FFMPEG_PATH = "/usr/local/bin/ffmpeg";
-    process.env.FFPROBE_PATH = "/usr/local/bin/ffprobe";
+    process.env.FFMPEG_PATH = "ffmpeg";
+    process.env.FFPROBE_PATH = "ffprobe";
     delete process.env.WHISPER_CPP_BIN;
     delete process.env.WHISPER_MODEL_PATH;
     vi.resetModules();

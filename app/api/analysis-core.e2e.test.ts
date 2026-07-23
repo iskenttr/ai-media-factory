@@ -16,6 +16,8 @@ describe("AI analysis core end to end", () => {
     if (directory) await rm(directory, { recursive: true, force: true });
     delete process.env.AMF_STORAGE_DIR;
     delete process.env.AMF_DATABASE_PATH;
+    delete process.env.FFMPEG_PATH;
+    delete process.env.FFPROBE_PATH;
     delete process.env.WHISPER_CPP_BIN;
     delete process.env.WHISPER_MODEL_PATH;
     vi.resetModules();
@@ -25,14 +27,14 @@ describe("AI analysis core end to end", () => {
     directory = await mkdtemp(path.join(os.tmpdir(), "amf-e2e-"));
     process.env.AMF_STORAGE_DIR = directory;
     process.env.AMF_DATABASE_PATH = path.join(directory, "analysis.sqlite");
-    process.env.FFMPEG_PATH = "/usr/local/bin/ffmpeg";
-    process.env.FFPROBE_PATH = "/usr/local/bin/ffprobe";
+    process.env.FFMPEG_PATH = "ffmpeg";
+    process.env.FFPROBE_PATH = "ffprobe";
     delete process.env.WHISPER_CPP_BIN;
     delete process.env.WHISPER_MODEL_PATH;
     vi.resetModules();
 
     const samplePath = path.join(directory, "sample.mp4");
-    const generated = spawnSync("/usr/local/bin/ffmpeg", [
+    const generated = spawnSync(process.env.FFMPEG_PATH, [
       "-y", "-f", "lavfi", "-i", "color=c=white:s=320x180:d=1",
       "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
       "-shortest", "-c:v", "mpeg4", "-c:a", "aac", samplePath,
