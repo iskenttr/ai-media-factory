@@ -461,6 +461,45 @@ describe("Integration tests", () => {
     expect(result.task!.enabled).toBe(true);
   });
 
+  it("Accepted generated tasks are remembered by title and not selected again", async () => {
+    const { generateBacklogTask, loadBacklogState, recordTaskOutcome, selectNextTask, wasTaskCompleted } = await import("./backlog-generator");
+    const generated = await generateBacklogTask(tempDir);
+    expect(generated.generated).toBe(true);
+    expect(generated.task).toBeDefined();
+
+    const task = generated.task!;
+    expect(await recordTaskOutcome(tempDir, task.task_id, task.title, "accepted")).toBe(true);
+
+    const state = await loadBacklogState(tempDir);
+    const metadata = state.generatedTasks.find((entry) => entry.taskId === task.task_id);
+    expect(metadata).toMatchObject({ title: task.title, status: "accepted" });
+    expect(wasTaskCompleted(state, task.title)).toBe(true);
+    expect(selectNextTask(state)?.title).not.toBe(task.title);
+  });
+
+  it("Rejected generated tasks are recorded against their title", async () => {
+    const { generateBacklogTask, hasExceededRetryLimit, loadBacklogState, recordTaskOutcome, selectNextTask } = await import("./backlog-generator");
+    const generated = await generateBacklogTask(tempDir);
+    const task = generated.task!;
+
+    expect(await recordTaskOutcome(tempDir, task.task_id, task.title, "rejected", "qa_failed")).toBe(true);
+
+    const state = await loadBacklogState(tempDir);
+    const metadata = state.generatedTasks.find((entry) => entry.taskId === task.task_id);
+    expect(metadata).toMatchObject({ title: task.title, status: "rejected", failureReason: "qa_failed" });
+    expect(hasExceededRetryLimit(state, task.title)).toBe(true);
+    expect(selectNextTask(state)?.title).not.toBe(task.title);
+  });
+
+  it("Manual tasks do not pollute autonomous backlog history", async () => {
+    const { loadBacklogState, recordTaskOutcome } = await import("./backlog-generator");
+    expect(await recordTaskOutcome(tempDir, "MANUAL-001", "Manual operator task", "accepted")).toBe(false);
+
+    const state = await loadBacklogState(tempDir);
+    expect(state.generatedTasks).toEqual([]);
+    expect(state.completedTaskIds.size).toBe(0);
+  });
+
   it("No eligible task -> safe no-op, not a crash", async () => {
     const { selectNextTask, wasTaskCompleted } = await import("./backlog-generator");
     // Create state with all tasks completed
