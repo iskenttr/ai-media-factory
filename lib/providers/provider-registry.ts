@@ -4,6 +4,7 @@ import type { SpeechAnalysisProvider } from "./contracts/speech-analysis-provide
 import type { SpeakerAnalysisProvider } from "./contracts/speaker-analysis-provider";
 import type { ContentProfileProvider } from "./contracts/content-profile-provider";
 import type { TranslationProvider } from "./contracts/translation-provider";
+import type { TtsProvider } from "./contracts/tts-provider";
 import { WhisperCppSpeechProvider } from "./adapters/whisper-cpp/whisper-cpp-provider";
 import { PyannoteCommunitySpeakerProvider } from "./adapters/pyannote-community-1/pyannote-speaker-provider";
 import { DeterministicContentProfileProvider } from "./adapters/deterministic-content-profile/deterministic-content-profile-provider";
@@ -14,6 +15,7 @@ export interface ProviderRegistry {
   speakers(): Promise<SpeakerAnalysisProvider | null>;
   contentProfile(): ContentProfileProvider;
   translation(): Promise<TranslationProvider | null>;
+  tts(): Promise<TtsProvider | null>;
 }
 
 export class LocalProviderRegistry implements ProviderRegistry {
@@ -58,5 +60,9 @@ export class LocalProviderRegistry implements ProviderRegistry {
     } catch {
       return null;
     }
+  }
+
+  async tts() {
+    return null;
   }
 }
