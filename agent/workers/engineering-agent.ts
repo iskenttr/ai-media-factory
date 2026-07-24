@@ -4,11 +4,101 @@ import fg from "fast-glob";
 import type { EngineeringTask } from "../tasks/schema";
 import { assertAllowedPath, assertWithinRoot } from "../policies/path-policy";
 import { applyCandidatePatch } from "./git-gateway";
-import { requestGeminiPatch } from "./gemini-broker";
+import { estimatePromptTokens, requestGeminiPatch } from "./gemini-broker";
 
 const GLOB_PATTERN = /[*?[\]]/;
-const MAX_CONTEXT_SIZE = 250_000;
+const MAX_CONTEXT_TOKENS = 140_000;
+const MAX_CONTEXT_FILE_TOKENS = 30_000;
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".json", ".md"];
+
+interface ContextSource {
+  filePath: string;
+  content: string;
+}
+
+function renderContextFileWithinBudget(
+  source: ContextSource,
+  tokenBudget: number,
+): { text: string; truncated: boolean } | null {
+  const header = `FILE: ${source.filePath}\n`;
+  const complete = `${header}${source.content}`;
+  if (estimatePromptTokens(complete) <= tokenBudget) {
+    return { text: complete, truncated: false };
+  }
+
+  const marker = `\n/* CONTEXT_TRUNCATED: ${source.filePath} */`;
+  if (estimatePromptTokens(`${header}${marker}`) > tokenBudget) return null;
+
+  let low = 0;
+  let high = source.content.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (
+      estimatePromptTokens(
+        `${header}${source.content.slice(0, middle)}${marker}`,
+      ) <= tokenBudget
+    ) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return {
+    text: `${header}${source.content.slice(0, low)}${marker}`,
+    truncated: true,
+  };
+}
+
+export function buildBoundedContext(
+  sources: ContextSource[],
+  tokenBudget = MAX_CONTEXT_TOKENS,
+) {
+  const context: string[] = [];
+  const omittedFiles: string[] = [];
+  const truncatedFiles: string[] = [];
+  const seen = new Set<string>();
+  let estimatedTokens = 0;
+
+  for (const source of sources) {
+    if (seen.has(source.filePath)) continue;
+    seen.add(source.filePath);
+
+    const remaining = tokenBudget - estimatedTokens;
+    if (remaining <= 0) {
+      omittedFiles.push(source.filePath);
+      continue;
+    }
+    const rendered = renderContextFileWithinBudget(
+      source,
+      Math.min(remaining, MAX_CONTEXT_FILE_TOKENS),
+    );
+    if (!rendered) {
+      omittedFiles.push(source.filePath);
+      continue;
+    }
+
+    context.push(rendered.text);
+    estimatedTokens += estimatePromptTokens(rendered.text);
+    if (rendered.truncated) truncatedFiles.push(source.filePath);
+  }
+
+  const affected = [...truncatedFiles, ...omittedFiles];
+  if (affected.length > 0) {
+    const notice = [
+      "CONTEXT_LIMIT_NOTICE: The context was deterministically bounded.",
+      `Affected files (${affected.length}): ${affected.slice(0, 20).join(", ")}`,
+      "Keep the patch narrow. Do not guess unseen file contents.",
+    ].join("\n");
+    const noticeTokens = estimatePromptTokens(notice);
+    if (estimatedTokens + noticeTokens <= tokenBudget) {
+      context.push(notice);
+      estimatedTokens += noticeTokens;
+    }
+  }
+
+  return { context, estimatedTokens, omittedFiles, truncatedFiles };
+}
 
 function isSourceFile(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
@@ -41,7 +131,7 @@ async function enumerateDirectoryFiles(dirPath: string, worktree: string, taskId
   } catch (error) {
     console.error(`[${taskId}] Error enumerating directory ${dirPath}:`, error);
   }
-  return files;
+  return files.sort();
 }
 
 export function isGlobPattern(requested: string): boolean {
@@ -58,7 +148,9 @@ export async function expandGlobPattern(pattern: string, worktree: string, taskI
       dot: false,
     });
     // Convert absolute paths back to relative paths
-    const relativeMatches = matches.map((m) => path.relative(worktree, m).replace(/\\/g, "/"));
+    const relativeMatches = matches
+      .map((m) => path.relative(worktree, m).replace(/\\/g, "/"))
+      .sort();
     if (relativeMatches.length === 0) {
       console.log(`[${taskId}] No files matched glob pattern: ${pattern}`);
     }
@@ -135,8 +227,8 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
     await writeFile(absolute, task.execution.content, { encoding: "utf8", flag: "wx" });
     return { plan: ["Create the task-scoped controlled sample file.", "Run isolated tests and deterministic evaluation.", "Commit only after QA and Security approval."], rationale: "Controlled migration smoke task; no model call was made.", modelCalls: 0 };
   }
-  const context: string[] = [];
-  let total = 0;
+  const contextSources: ContextSource[] = [];
+  const seenContextFiles = new Set<string>();
   for (const requested of task.execution.context_paths) {
     let files: string[];
     if (isGlobPattern(requested)) {
@@ -155,14 +247,14 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
       }
     }
 
-    for (const file of files) {
+    for (const file of files.sort()) {
       try {
         const validatedFile = assertAllowedPath(file, task.allowed_paths, task.forbidden_paths);
+        if (seenContextFiles.has(validatedFile)) continue;
         const absolutePath = assertWithinRoot(worktree, path.join(worktree, validatedFile));
         const content = await readFile(absolutePath, "utf8");
-        total += content.length;
-        if (total > MAX_CONTEXT_SIZE) throw new Error("model_context_budget_exhausted");
-        context.push(`FILE: ${validatedFile}\n${content}`);
+        seenContextFiles.add(validatedFile);
+        contextSources.push({ filePath: validatedFile, content });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           console.error(`[${task.task_id}] Context file not found: ${file}, skipping`);
@@ -176,6 +268,14 @@ export async function implementTask(root: string, task: EngineeringTask, worktre
       }
     }
   }
+  const contextTokenBudget = Math.min(
+    MAX_CONTEXT_TOKENS,
+    Math.max(1, Math.floor(task.limits.maximum_model_tokens * 0.7)),
+  );
+  const { context } = buildBoundedContext(
+    contextSources,
+    contextTokenBudget,
+  );
   const constitution = await readFile(path.join(root, "docs/AI_MEDIA_FACTORY_CONSTITUTION.md"), "utf8");
   const rolePrompt = await readFile(path.join(root, "agent/prompts/engineering-agent.md"), "utf8");
   const promptParts = [

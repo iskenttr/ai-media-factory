@@ -177,6 +177,7 @@ export interface TaskSuggestion {
   title: string;
   objective: string;
   allowedPaths: string[];
+  contextPaths?: string[];
   testCommands: string[][];
 }
 
@@ -363,9 +364,15 @@ export const TASK_SUGGESTIONS: TaskSuggestion[] = [
   {
     priority: "reliability",
     category: "source_code",
-    title: "Add error boundary for API routes",
-    objective: "Add comprehensive error handling with proper error classification to all /api/* routes. Each endpoint should catch errors, classify them using the error system, and return appropriate HTTP status codes with structured error responses.",
+    title: "Add shared API error response boundary",
+    objective: "Introduce or extend a shared error-to-HTTP response mapper and apply it to two representative API routes with deterministic tests. Keep the change incremental; do not rewrite every API route in one task.",
     allowedPaths: ["app/api/**", "lib/**/*.ts"],
+    contextPaths: [
+      "lib/errors.ts",
+      "app/api/uploads/route.ts",
+      "app/api/analysis/jobs/[jobId]/retry/route.ts",
+      "app/api/localization/runs/[runId]/route.ts",
+    ],
     testCommands: [["npm", "test", "--", "error"]],
   },
   {
@@ -556,8 +563,12 @@ export async function createTaskFromSuggestion(
   const taskId = generateTaskId(suggestion.priority);
   const isHighPriority = ["bug", "voice_dubbing", "reliability", "security"].includes(suggestion.priority);
 
-  // Resolve context paths to existing directories
-  const contextPaths = await resolveContextPaths(suggestion.allowedPaths, root);
+  // Writable scope and model context are separate: a task may be allowed to
+  // touch a broad area while receiving only the few files needed to reason.
+  const contextPaths = await resolveContextPaths(
+    suggestion.contextPaths ?? suggestion.allowedPaths,
+    root,
+  );
 
   // Always use safe execution limits
   const limits = {
