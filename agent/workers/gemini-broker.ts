@@ -13,6 +13,32 @@ export interface ModelResponse {
   actualModel: string;
 }
 
+const PROMPT_BYTES_PER_TOKEN = 3;
+const THINKING_LEVELS = ["MINIMAL", "LOW", "MEDIUM", "HIGH"] as const;
+type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/**
+ * Source-heavy prompts are mostly ASCII and average roughly four bytes per
+ * token. Using three bytes per token keeps a safety margin without treating
+ * every UTF-8 byte as a separate token.
+ */
+export function estimatePromptTokens(prompt: string): number {
+  return Math.max(
+    1,
+    Math.ceil(Buffer.byteLength(prompt, "utf8") / PROMPT_BYTES_PER_TOKEN),
+  );
+}
+
+export function configuredThinkingLevel(
+  value = process.env.AMF_AGENT_THINKING_LEVEL,
+): ThinkingLevel {
+  const normalized = (value ?? "LOW").trim().toUpperCase();
+  if ((THINKING_LEVELS as readonly string[]).includes(normalized)) {
+    return normalized as ThinkingLevel;
+  }
+  throw new Error(`invalid_thinking_level:${value}`);
+}
+
 interface ModelUsageEntry {
   taskId: string;
   timestamp: string;
@@ -263,9 +289,26 @@ export function isModelAllowed(model: string, families: string[]): boolean {
 // ---------------------------------------------------------------------------
 export function extractResponse(
   text: string,
-): { parsed: ModelResponse | null; error: string | null } {
+): {
+  parsed: ModelResponse | null;
+  error: string | null;
+  finishReason: string | null;
+} {
+  let direct: Record<string, unknown>;
   try {
-    const direct = JSON.parse(text) as Record<string, unknown>;
+    direct = JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    return {
+      parsed: null,
+      error: `gemini_response_parse_failed:${e instanceof Error ? e.message : String(e)}`,
+      finishReason: null,
+    };
+  }
+
+  const finishReason =
+    typeof direct.finishReason === "string" ? direct.finishReason : null;
+
+  try {
     const candidate =
       typeof direct.response === "string"
         ? (JSON.parse(direct.response) as Record<string, unknown>)
@@ -275,7 +318,11 @@ export function extractResponse(
       typeof candidate.patch !== "string" ||
       typeof candidate.rationale !== "string"
     ) {
-      return { parsed: null, error: "gemini_response_contract_invalid" };
+      return {
+        parsed: null,
+        error: "gemini_response_contract_invalid",
+        finishReason,
+      };
     }
     const stats =
       typeof direct.stats === "object" && direct.stats
@@ -318,11 +365,13 @@ export function extractResponse(
         actualModel,
       },
       error: null,
+      finishReason,
     };
   } catch (e) {
     return {
       parsed: null,
       error: `gemini_response_parse_failed:${e instanceof Error ? e.message : String(e)}`,
+      finishReason,
     };
   }
 }
@@ -399,6 +448,10 @@ async function callVertexOnce(
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
           maxOutputTokens: maximumOutputTokens,
+          temperature: 0.1,
+          thinkingConfig: {
+            thinkingLevel: configuredThinkingLevel(),
+          },
           responseMimeType: "application/json",
           responseSchema: {
             type: "OBJECT",
@@ -428,8 +481,12 @@ async function callVertexOnce(
       status = response.status;
       stderr = JSON.stringify(payload);
     } else {
-      const candidates = payload.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }> | undefined;
-      const responseText = candidates?.[0]?.content?.parts?.[0]?.text;
+      const candidates = payload.candidates as Array<{
+        content?: { parts?: Array<{ text?: string }> };
+        finishReason?: string;
+      }> | undefined;
+      const candidate = candidates?.[0];
+      const responseText = candidate?.content?.parts?.[0]?.text;
       if (typeof responseText !== "string") throw new Error("vertex_response_text_missing");
       const usage = (payload.usageMetadata ?? {}) as Record<string, unknown>;
       const modelVersion = typeof payload.modelVersion === "string" ? payload.modelVersion : requestedModel;
@@ -445,6 +502,7 @@ async function callVertexOnce(
       stdout = JSON.stringify({
         response: responseText,
         model: modelVersion,
+        finishReason: candidate?.finishReason ?? "UNKNOWN",
         stats: { models: { [modelVersion]: { tokens } }, tools: { totalCalls: 0 } },
       });
       status = 0;
@@ -526,17 +584,12 @@ async function _requestGeminiPatch(
   if (taskUsage.calls >= effectiveMaximumCalls) throw new Error("model_call_budget_exhausted");
   if (dailyBudget.reason) throw new Error(dailyBudget.reason);
 
-  // UTF-8 byte length is a conservative tokenizer-independent ceiling: a
-  // tokenizer cannot emit more non-empty tokens than the encoded byte stream.
-  const estimatedPromptTokens = Buffer.byteLength(prompt, "utf8");
-  const remainingTaskTokens = effectiveMaximumTokens - taskUsage.estimatedTokens - estimatedPromptTokens;
-  if (remainingTaskTokens <= 0) {
+  const initialPromptTokens = estimatePromptTokens(prompt);
+  if (
+    effectiveMaximumTokens - taskUsage.estimatedTokens - initialPromptTokens <= 0
+  ) {
     throw new Error("model_token_budget_exhausted");
   }
-  const maximumOutputTokens = Math.min(
-    remainingTaskTokens,
-    Math.floor(numericSetting(process.env.AMF_AGENT_MAX_OUTPUT_TOKENS, 8_192)),
-  );
 
   const requestedModel = process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
   const families = allowedModelFamilies();
@@ -576,6 +629,25 @@ async function _requestGeminiPatch(
       throw new Error("model_call_budget_exhausted");
     }
     const callIndex = currentTaskUsage.calls + 1;
+    const attemptPrompt = attempt === 0
+      ? prompt
+      : `${prompt}
+
+RECOVERY REQUIREMENT: The previous structured response was incomplete or invalid.
+Return a complete JSON response that matches the schema. Keep the patch narrowly
+scoped and compact enough to finish within the output limit. Do not omit tests.`;
+    const estimatedPromptTokens = estimatePromptTokens(attemptPrompt);
+    const remainingTaskTokens =
+      effectiveMaximumTokens -
+      currentTaskUsage.estimatedTokens -
+      estimatedPromptTokens;
+    if (remainingTaskTokens <= 0) {
+      throw new Error("model_token_budget_exhausted");
+    }
+    const maximumOutputTokens = Math.min(
+      remainingTaskTokens,
+      Math.floor(numericSetting(process.env.AMF_AGENT_MAX_OUTPUT_TOKENS, 8_192)),
+    );
     const reservation = await reserveDailyModelCall(root, {
       taskId,
       estimatedPromptTokens,
@@ -597,14 +669,14 @@ async function _requestGeminiPatch(
 
     const callResult = await callVertexOnce(
       root, taskId, requestedModel, location, project,
-      prompt, callIndex, hardTimeoutMs, maximumOutputTokens,
+      attemptPrompt, callIndex, hardTimeoutMs, maximumOutputTokens,
     );
 
     const { status, stdout, stderr, durationMs, timedOut, stdoutArtifact, stderrArtifact } =
       callResult;
     const extracted = status === 0
       ? extractResponse(stdout)
-      : { parsed: null, error: null };
+      : { parsed: null, error: null, finishReason: null };
     const settlementTimestamp = new Date().toISOString();
     const settlement = await settleDailyModelCall(usageFile, {
       reservationId: reservation.reservationId,
@@ -688,6 +760,25 @@ async function _requestGeminiPatch(
     // Parse response
     const { parsed, error: parseError } = extracted;
     if (parseError || !parsed) {
+      if (attempt < maxRetries) {
+        retryDelayMs = 1_000;
+        lastError = new Error(
+          parseError ?? "gemini_response_parse_failed:unknown",
+        );
+        await appendAudit(root, {
+          timestamp: new Date().toISOString(),
+          taskId,
+          category: "model",
+          event: "gemini_structured_response_retry",
+          detail: {
+            attempt,
+            requestedModel,
+            parseError,
+            finishReason: extracted.finishReason,
+          },
+        });
+        continue;
+      }
       throw new Error(parseError ?? "gemini_response_parse_failed:unknown");
     }
     parsed.requestedModel = requestedModel;
