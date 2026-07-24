@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { allowedModelFamilies, extractResponse, getDailyModelBudgetStatus, isModelAllowed, isTransientVertexFailure, reserveDailyModelCall } from "./gemini-broker";
+import { allowedModelFamilies, configuredThinkingLevel, estimatePromptTokens, extractResponse, getDailyModelBudgetStatus, isModelAllowed, isTransientVertexFailure, reserveDailyModelCall } from "./gemini-broker";
 
 describe("daily model budget", () => {
   const originalRequestLimit = process.env.AMF_AGENT_DAILY_REQUEST_LIMIT;
@@ -282,6 +282,55 @@ describe("Gemini CLI JSON parsing", () => {
       thoughts: 1217,
       tool: 0,
     });
+  });
+
+  it("keeps the provider finish reason when structured JSON is truncated", () => {
+    const result = extractResponse(JSON.stringify({
+      response: "{\"plan\":[\"inspect\"],\"patch\":\"diff --git",
+      finishReason: "MAX_TOKENS",
+      model: "gemini-3.5-flash",
+    }));
+
+    expect(result.parsed).toBeNull();
+    expect(result.error).toContain("gemini_response_parse_failed");
+    expect(result.finishReason).toBe("MAX_TOKENS");
+  });
+});
+
+describe("prompt token estimation", () => {
+  it("does not treat every source-code byte as a token", () => {
+    expect(estimatePromptTokens("a".repeat(210_000))).toBe(70_000);
+  });
+
+  it("keeps a safety margin for multi-byte Turkish text", () => {
+    expect(estimatePromptTokens("ş".repeat(3_000))).toBe(2_000);
+  });
+
+  it("never reports an empty prompt as zero tokens", () => {
+    expect(estimatePromptTokens("")).toBe(1);
+  });
+});
+
+describe("thinking level", () => {
+  const originalThinkingLevel = process.env.AMF_AGENT_THINKING_LEVEL;
+
+  afterEach(() => {
+    if (originalThinkingLevel === undefined) {
+      delete process.env.AMF_AGENT_THINKING_LEVEL;
+    } else {
+      process.env.AMF_AGENT_THINKING_LEVEL = originalThinkingLevel;
+    }
+  });
+
+  it("defaults to LOW so thinking cannot consume the whole patch budget", () => {
+    delete process.env.AMF_AGENT_THINKING_LEVEL;
+    expect(configuredThinkingLevel()).toBe("LOW");
+  });
+
+  it("rejects unknown levels instead of silently weakening the policy", () => {
+    expect(() => configuredThinkingLevel("unlimited")).toThrow(
+      "invalid_thinking_level",
+    );
   });
 });
 
