@@ -3,7 +3,39 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { normalizeUnifiedDiffHunks, normalizeUnifiedDiffMetadata, isGlobPattern, expandGlobPattern } from "./engineering-agent";
+import { buildBoundedContext, normalizeUnifiedDiffHunks, normalizeUnifiedDiffMetadata, isGlobPattern, expandGlobPattern } from "./engineering-agent";
+
+describe("bounded model context", () => {
+  it("truncates oversized files instead of failing the whole task", () => {
+    const result = buildBoundedContext([
+      { filePath: "app/api/route.ts", content: "x".repeat(30_000) },
+    ], 1_000);
+
+    expect(result.estimatedTokens).toBeLessThanOrEqual(1_000);
+    expect(result.truncatedFiles).toEqual(["app/api/route.ts"]);
+    expect(result.context.join("\n")).toContain("CONTEXT_TRUNCATED");
+  });
+
+  it("deduplicates repeated context paths deterministically", () => {
+    const result = buildBoundedContext([
+      { filePath: "lib/errors.ts", content: "first" },
+      { filePath: "lib/errors.ts", content: "second" },
+    ], 1_000);
+
+    expect(result.context.join("\n")).toContain("first");
+    expect(result.context.join("\n")).not.toContain("second");
+  });
+
+  it("records files that cannot fit after the bounded context is full", () => {
+    const result = buildBoundedContext([
+      { filePath: "first.ts", content: "a".repeat(3_000) },
+      { filePath: "second.ts", content: "small" },
+    ], 1_000);
+
+    expect(result.estimatedTokens).toBeLessThanOrEqual(1_000);
+    expect(result.omittedFiles).toContain("second.ts");
+  });
+});
 
 // Test the helper functions by importing them (they are not exported, so we test via enumerateDirectoryFiles behavior)
 describe("Directory context handling", () => {

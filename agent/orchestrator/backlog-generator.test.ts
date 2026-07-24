@@ -584,7 +584,7 @@ describe("Integration tests", () => {
       "Add dubbing segment synchronization evaluator",
       "Add per-segment voice preview and regeneration workflow",
       "Build golden Turkish dubbing quality fixtures",
-      "Add error boundary for API routes",
+      "Add shared API error response boundary",
       "Add health check to background workers",
       "Add timing validation for subtitle segments",
       "Add tests for SRT parser edge cases",
@@ -780,6 +780,31 @@ describe("Context path resolution", () => {
   });
 
   describe("createTaskFromSuggestion with context paths", () => {
+    it("uses an explicit narrow context without weakening writable scope", async () => {
+      const testDir = await mkdtemp(path.join(tmpdir(), "task-test-"));
+      await mkdir(path.join(testDir, "app/api"), { recursive: true });
+      await mkdir(path.join(testDir, "lib"), { recursive: true });
+      await writeFile(path.join(testDir, "lib/errors.ts"), "export {};");
+      await writeFile(path.join(testDir, "lib/unrelated.ts"), "export {};");
+
+      const task = await createTaskFromSuggestion({
+        priority: "reliability",
+        category: "source_code",
+        title: "Narrow context",
+        objective: "Test narrow context selection.",
+        allowedPaths: ["app/api/**", "lib/**/*.ts"],
+        contextPaths: ["lib/errors.ts"],
+        testCommands: [["npm", "test"]],
+      }, testDir);
+
+      expect(task.allowed_paths).toEqual(["app/api/**", "lib/**/*.ts"]);
+      if (task.execution.kind === "gemini_patch") {
+        expect(task.execution.context_paths).toEqual(["lib/errors.ts"]);
+      }
+
+      await rm(testDir, { recursive: true, force: true });
+    });
+
     it("generated task has valid context_paths for existing directories", async () => {
       // Create a temp dir with a known structure
       const testDir = await mkdtemp(path.join(tmpdir(), "task-test-"));
