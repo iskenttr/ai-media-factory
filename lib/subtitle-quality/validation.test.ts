@@ -40,4 +40,53 @@ describe("quality validation, repair, and regression", () => {
     expect(aligned.length).toBeGreaterThan(1);
     expect(aligned[0].endMs).toBe(1_600);
   });
+
+  describe("comprehensive quality scoring", () => {
+    it("achieves a perfect score of 100 under ideal conditions", () => {
+      const perfectCues = prepareCues([
+        { startMs: 1000, endMs: 3000, text: "Kısa ve net." }
+      ], profile);
+      const snapshot = qualitySnapshot(perfectCues, profile, 0, 0);
+      expect(snapshot.score).toBe(100);
+      expect(snapshot.failures).toEqual([]);
+    });
+
+    it("handles zero-length segments gracefully without crashing", () => {
+      const zeroLengthCues = [
+        {
+          startMs: 1000,
+          endMs: 1000,
+          text: "Sıfır",
+          lines: ["Sıfır"] as [string],
+          fontSize: 32
+        }
+      ];
+      const snapshot = qualitySnapshot(zeroLengthCues, profile, 0, 0);
+      expect(snapshot.failures).toContain("timing");
+      expect(snapshot.score).toBeLessThan(100);
+    });
+
+    it("correctly scores Unicode text with combining marks", () => {
+      const unicodeCues = prepareCues([
+        { startMs: 1000, endMs: 3000, text: "C\u0327u\u0308neyt" }
+      ], profile);
+      const snapshot = qualitySnapshot(unicodeCues, profile, 0, 0);
+      expect(snapshot.failures).toEqual([]);
+      expect(snapshot.maximumCps).toBeLessThan(10);
+    });
+
+    it("handles extreme and negative timestamps safely", () => {
+      const extremeCues = [
+        {
+          startMs: -5000,
+          endMs: 999999999,
+          text: "Sınırlar",
+          lines: ["Sınırlar"] as [string],
+          fontSize: 32
+        }
+      ];
+      const snapshot = qualitySnapshot(extremeCues, profile, 0, 0);
+      expect(snapshot.failures).toContain("timing");
+    });
+  });
 });
